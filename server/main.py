@@ -10,6 +10,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import asyncio
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Body

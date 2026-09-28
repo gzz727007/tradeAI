@@ -77,7 +77,7 @@ class LLMManager:
                 model = os.getenv("QWEN_MODEL", p_info["default_model"])
             elif p_key == "gemini":
                 key = os.getenv("GEMINI_API_KEY", "")
-                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                base_url = os.getenv("GEMINI_BASE_URL", p_info["default_base_url"])
                 model = os.getenv("GEMINI_FLASH_MODEL", p_info["default_model"])
             else:
                 key = os.getenv("OPENAI_API_KEY", "")
@@ -154,6 +154,9 @@ class LLMManager:
                 set_key(str(ENV_PATH), "GEMINI_API_KEY", api_key.strip())
                 os.environ["GEMINI_API_KEY"] = api_key.strip()
                 settings.GEMINI_API_KEY = api_key.strip()
+            set_key(str(ENV_PATH), "GEMINI_BASE_URL", final_base_url)
+            os.environ["GEMINI_BASE_URL"] = final_base_url
+            settings.GEMINI_BASE_URL = final_base_url
             set_key(str(ENV_PATH), "GEMINI_FLASH_MODEL", final_model)
             set_key(str(ENV_PATH), "GEMINI_PRO_MODEL", final_model)
             os.environ["GEMINI_FLASH_MODEL"] = final_model
@@ -188,7 +191,15 @@ class LLMManager:
         if not test_key:
             return {"success": False, "error": "请先输入 API Key / Token 后再测试连接"}
 
-        test_base_url = base_url.strip() if base_url.strip() else preset["default_base_url"]
+        if not base_url.strip():
+            if provider == "deepseek": test_base_url = os.getenv("DEEPSEEK_BASE_URL", preset["default_base_url"])
+            elif provider == "qwen": test_base_url = os.getenv("QWEN_BASE_URL", preset["default_base_url"])
+            elif provider == "gemini": test_base_url = os.getenv("GEMINI_BASE_URL", preset["default_base_url"])
+            elif provider == "openai": test_base_url = os.getenv("OPENAI_BASE_URL", preset["default_base_url"])
+            else: test_base_url = preset["default_base_url"]
+        else:
+            test_base_url = base_url.strip()
+
         test_model = model.strip() if model.strip() else preset["default_model"]
 
         t0 = time.time()
@@ -265,7 +276,7 @@ class LLMManager:
                 model = os.getenv("QWEN_MODEL", model)
             elif p == "gemini":
                 key = os.getenv("GEMINI_API_KEY", "")
-                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                base_url = os.getenv("GEMINI_BASE_URL", base_url)
                 model = os.getenv("GEMINI_FLASH_MODEL", model)
             elif p == "openai":
                 key = os.getenv("OPENAI_API_KEY", "")
