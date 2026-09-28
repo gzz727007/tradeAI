@@ -35,6 +35,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   const [loading, setLoading] = useState(false);
   const [streamSteps, setStreamSteps] = useState<Array<{ step: string; message: string }>>([]);
   const [selectedBondCode, setSelectedBondCode] = useState<string>('');
+  const [llmConfig, setLlmConfig] = useState<any>(null);
 
   const [strategiesList, setStrategiesList] = useState<Strategy[]>(strategies);
   const [currentStrategyId, setCurrentStrategyId] = useState<string>(selectedStrategyId || 'default');
@@ -76,6 +77,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
 
   useEffect(() => {
     loadCachedResult();
+    api.getLLMConfig().then((data) => setLlmConfig(data)).catch(() => {});
   }, []);
 
   const handleStartConsultation = () => {
@@ -148,6 +150,11 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   const equityRev = result?.equity_reviews?.[selectedBondCode];
   const clauseRev = result?.clause_reviews?.[selectedBondCode];
 
+  const activeProviderKey = llmConfig?.active_provider;
+  const activeProviderInfo = llmConfig?.providers?.[activeProviderKey];
+  const activeModelName = activeProviderInfo?.model || '已就绪模型';
+  const activeProviderName = activeProviderInfo?.name || '大模型';
+
   return (
     <div className="space-y-4">
       {/* Strategy-Driven Controller Bar */}
@@ -158,17 +165,23 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
               <div className="w-8 h-8 rounded-lg bg-linear-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-xs">
                 <Bot className="w-4 h-4" />
               </div>
-              <div>
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
                   <span>今日 AI 智能体投研会诊室</span>
                   <span className="text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200 px-2 py-0.5 rounded-full">
                     Quantamental 量化前置初筛 + 多智能体博弈
                   </span>
                 </h3>
+                {llmConfig?.is_ready && (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full shadow-2xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>算力引擎: <b>{activeProviderName}</b> · <code className="bg-white/80 px-1 py-0.2 rounded text-[9px] text-emerald-800">{activeModelName}</code> (全自适应弹性调度)</span>
+                  </span>
+                )}
               </div>
             </div>
             <p className="text-xs text-slate-500">
-              由前置量化策略从 500+ 只转债中粗筛标的，再交由 <b className="text-slate-700">Qwen信用风控官</b>、<b className="text-slate-700">Gemini动量官</b>、<b className="text-slate-700">Gemini条款博弈专家</b> 进行穿透审核，最后由 <b className="text-slate-700">PM投资总监</b> 一票否决并生成组合。
+              由前置量化策略从 500+ 只转债中粗筛标的，再交由 <b className="text-slate-700">信用风控官</b>、<b className="text-slate-700">正股动量官</b>、<b className="text-slate-700">条款博弈专家</b> 进行穿透审核（统一由当前配置的 <b className="text-slate-700">{activeModelName}</b> 自适应推理驱动），最后由 <b className="text-slate-700">PM投资总监</b> 一票否决并生成最优组合配置。
             </p>
           </div>
 
@@ -377,7 +390,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
             <div className="bg-rose-50/50 rounded-xl border border-rose-200 p-4 shadow-xs">
               <div className="font-bold text-xs text-rose-800 flex items-center gap-1.5 mb-2">
                 <AlertOctagon className="w-4 h-4 text-rose-600" />
-                <span>🚫 首席风控官 (Qwen 28B) 一票否决高危名单 ({result.vetoed_bonds.length} 只)</span>
+                <span>🚫 首席风控官 ({result.models_used?.credit?.model || (llmConfig?.is_ready ? activeModelName : '风控排雷')}) 一票否决高危名单 ({result.vetoed_bonds.length} 只)</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {result.vetoed_bonds.map((vb: any, idx: number) => (
@@ -436,14 +449,14 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
 
             {/* Chat Transcript Bubbles: 2x2 grid on wide screens */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-1">
-              {/* Agent 1: Qwen */}
+              {/* Agent 1: Credit Risk */}
               <div className="flex gap-3 items-start bg-slate-50/70 p-3 rounded-xl border border-slate-200">
                 <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-xs">
                   🛡️
                 </div>
                 <div className="space-y-1 text-xs">
                   <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>首席风控官 · Qwen 28B</span>
+                    <span>{result.models_used?.credit?.label || `首席风控官 · ${llmConfig?.is_ready ? activeModelName : '风控排雷'}`}</span>
                     <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-semibold">
                       结论: {creditRev?.risk_level || 'PASS'}
                     </span>
@@ -454,14 +467,14 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 </div>
               </div>
 
-              {/* Agent 2: Gemini Flash */}
+              {/* Agent 2: Equity Momentum */}
               <div className="flex gap-3 items-start bg-blue-50/40 p-3 rounded-xl border border-blue-100">
                 <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center shrink-0 font-bold text-xs">
                   🚀
                 </div>
                 <div className="space-y-1 text-xs">
                   <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>正股动量分析师 · Gemini 3.8 Flash</span>
+                    <span>{result.models_used?.equity?.label || `正股动量分析师 · ${llmConfig?.is_ready ? activeModelName : '弹性算法'}`}</span>
                     <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-semibold">
                       弹性评分: {equityRev?.momentum_score || 75}/100
                     </span>
@@ -472,14 +485,14 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 </div>
               </div>
 
-              {/* Agent 3: Gemini Pro */}
+              {/* Agent 3: Clause Game */}
               <div className="flex gap-3 items-start bg-purple-50/40 p-3 rounded-xl border border-purple-100">
                 <div className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0 font-bold text-xs">
                   ♟️
                 </div>
                 <div className="space-y-1 text-xs">
                   <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>条款博弈专家 · Gemini 3.1 Pro</span>
+                    <span>{result.models_used?.clause?.label || `条款博弈专家 · ${llmConfig?.is_ready ? activeModelName : '博弈推演'}`}</span>
                     <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-semibold">
                       强赎风险: {clauseRev?.call_risk_level || 'LOW'}
                     </span>
@@ -497,7 +510,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 </div>
                 <div className="space-y-1 text-xs">
                   <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>投资总监 (PM) · 最终裁决</span>
+                    <span>{result.models_used?.pm?.label || '投资总监 (PM) · 最终裁决'}</span>
                     <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-semibold">
                       建议配置: {selectedPortfolioItem ? Math.round(selectedPortfolioItem.weight * 1000) / 10 : 6.7}%
                     </span>

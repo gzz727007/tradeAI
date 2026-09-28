@@ -14,7 +14,8 @@ class ClauseAnalystAgent:
     """条款博弈与不对称赔率 Agent"""
 
     def __init__(self):
-        self.client, self.model = llm_manager.get_client(preferred="gemini")
+        self.client, self.model, self.provider, self.provider_name = llm_manager.get_client_with_provider(preferred="gemini")
+        self.role_name = "条款博弈专家"
 
 
     def evaluate_bond(self, candidate: BondCandidate) -> ClauseGameResult:

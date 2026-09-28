@@ -15,7 +15,8 @@ class CreditAnalystAgent:
     """信用风控与排雷 Agent"""
 
     def __init__(self):
-        self.client, self.model = llm_manager.get_client(preferred="qwen")
+        self.client, self.model, self.provider, self.provider_name = llm_manager.get_client_with_provider(preferred="qwen")
+        self.role_name = "首席风控官"
 
 
     def evaluate_bond(self, candidate: BondCandidate) -> CreditRiskResult:

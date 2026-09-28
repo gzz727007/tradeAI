@@ -135,6 +135,15 @@ export interface CandidateBond {
   rating: string;
 }
 
+export interface AgentModelMeta {
+  role: string;
+  provider: string;
+  provider_name: string;
+  model: string;
+  is_llm: boolean;
+  label: string;
+}
+
 export interface AgentResult {
   has_run: boolean;
   run_time?: string;
@@ -143,6 +152,13 @@ export interface AgentResult {
   strategy_category?: string;
   strategy_params?: any;
   screened_count?: number;
+  models_used?: {
+    active_provider?: string;
+    credit?: AgentModelMeta;
+    equity?: AgentModelMeta;
+    clause?: AgentModelMeta;
+    pm?: AgentModelMeta;
+  };
   candidates: CandidateBond[];
   credit_reviews: Record<string, { risk_level: string; reason: string }>;
   equity_reviews: Record<string, { momentum_score: number; sector_themes: string[]; catalyst_summary: string }>;

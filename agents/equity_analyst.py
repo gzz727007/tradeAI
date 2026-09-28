@@ -14,7 +14,8 @@ class EquityAnalystAgent:
     """正股动量与题材 Agent"""
 
     def __init__(self):
-        self.client, self.model = llm_manager.get_client(preferred="gemini")
+        self.client, self.model, self.provider, self.provider_name = llm_manager.get_client_with_provider(preferred="gemini")
+        self.role_name = "正股动量分析师"
 
     def evaluate_bond(self, candidate: BondCandidate) -> EquityMomentumResult:
         stock_name = candidate["stock_name"]

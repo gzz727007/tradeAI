@@ -560,10 +560,57 @@ def resolve_screening_params(strategy_id: Optional[str] = None):
         "sort_by": sort_by
     }
 
+def build_models_used(credit_agent, equity_agent, clause_agent):
+    return {
+        "active_provider": llm_manager.get_config().get("active_provider", "gemini"),
+        "credit": {
+            "role": "首席风控官",
+            "provider": getattr(credit_agent, "provider", ""),
+            "provider_name": getattr(credit_agent, "provider_name", ""),
+            "model": getattr(credit_agent, "model", ""),
+            "is_llm": bool(credit_agent.client),
+            "label": f"首席风控官 · {credit_agent.model or '硬规则引擎'}"
+        },
+        "equity": {
+            "role": "正股动量分析师",
+            "provider": getattr(equity_agent, "provider", ""),
+            "provider_name": getattr(equity_agent, "provider_name", ""),
+            "model": getattr(equity_agent, "model", ""),
+            "is_llm": bool(equity_agent.client),
+            "label": f"正股动量分析师 · {equity_agent.model or '弹性算法'}"
+        },
+        "clause": {
+            "role": "条款博弈专家",
+            "provider": getattr(clause_agent, "provider", ""),
+            "provider_name": getattr(clause_agent, "provider_name", ""),
+            "model": getattr(clause_agent, "model", ""),
+            "is_llm": bool(clause_agent.client),
+            "label": f"条款博弈专家 · {clause_agent.model or '博弈模型'}"
+        },
+        "pm": {
+            "role": "投资总监 (PM)",
+            "provider": "builtin",
+            "provider_name": "量化仲裁引擎",
+            "model": "Rule-Based Arbiter",
+            "is_llm": False,
+            "label": "投资总监 (PM) · 最终裁决"
+        }
+    }
+
 @app.get("/api/agents/result")
 def get_agents_result():
     if "data" in AGENT_CACHE:
         return AGENT_CACHE["data"]
+    try:
+        from db import SessionLocal, AgentReportRecord
+        with SessionLocal() as session:
+            latest = session.query(AgentReportRecord).order_by(AgentReportRecord.created_at.desc()).first()
+            if latest and latest.result_json:
+                data = json.loads(latest.result_json)
+                AGENT_CACHE["data"] = data
+                return data
+    except Exception:
+        pass
     return {"has_run": False}
 
 @app.post("/api/agents/run")
@@ -574,15 +621,15 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
     # 1. 初筛
     candidates = screener.screen(quotes_df)
     
-    # 2. 信用风控 (Qwen 28B)
+    # 2. 信用风控
     credit_agent = CreditAnalystAgent()
     credit_reviews = credit_agent.batch_evaluate(candidates)
     
-    # 3. 正股动量 (Gemini Flash)
+    # 3. 正股动量
     equity_agent = EquityAnalystAgent()
     equity_reviews = equity_agent.batch_evaluate(candidates)
     
-    # 4. 条款博弈 (Gemini Pro)
+    # 4. 条款博弈
     clause_agent = ClauseAnalystAgent()
     clause_reviews = clause_agent.batch_evaluate(candidates)
     
@@ -594,6 +641,8 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
         equity_reviews=equity_reviews,
         clause_reviews=clause_reviews
     )
+
+    models_used = build_models_used(credit_agent, equity_agent, clause_agent)
     
     res = {
         "has_run": True,
@@ -603,6 +652,7 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
         "strategy_category": strat_cat,
         "strategy_params": strat_params,
         "screened_count": len(candidates),
+        "models_used": models_used,
         "candidates": candidates,
         "credit_reviews": credit_reviews,
         "equity_reviews": equity_reviews,
@@ -681,11 +731,12 @@ async def websocket_agents_stream(websocket: WebSocket):
         await asyncio.sleep(0.5)
         
         # 信用审查
+        credit_agent = CreditAnalystAgent()
+        credit_label = f"{credit_agent.provider_name} · {credit_agent.model}" if credit_agent.client else "内置硬风控"
         await websocket.send_json({
             "step": "credit",
-            "message": "🛡️ [Node 2: 信用排雷 Agent · Qwen 28B] 穿透审查大股东财务真实性与退市质押风险..."
+            "message": f"🛡️ [Node 2: 首席风控官 · {credit_label}] 穿透审查大股东财务真实性与退市质押风险..."
         })
-        credit_agent = CreditAnalystAgent()
         credit_reviews = credit_agent.batch_evaluate(candidates)
         veto_count = sum(1 for r in credit_reviews.values() if r["risk_level"] == "VETO")
         await websocket.send_json({
@@ -696,11 +747,12 @@ async def websocket_agents_stream(websocket: WebSocket):
         await asyncio.sleep(0.5)
         
         # 动量评估
+        equity_agent = EquityAnalystAgent()
+        equity_label = f"{equity_agent.provider_name} · {equity_agent.model}" if equity_agent.client else "量化动量算法"
         await websocket.send_json({
             "step": "equity",
-            "message": "🚀 [Node 3: 正股动量 Agent · Gemini 3.8 Flash] 扫描正股题材风口与技术均线形态..."
+            "message": f"🚀 [Node 3: 正股动量 Agent · {equity_label}] 扫描正股题材风口与技术均线形态..."
         })
-        equity_agent = EquityAnalystAgent()
         equity_reviews = equity_agent.batch_evaluate(candidates)
         await websocket.send_json({
             "step": "equity_done",
@@ -709,11 +761,12 @@ async def websocket_agents_stream(websocket: WebSocket):
         await asyncio.sleep(0.5)
         
         # 条款博弈
+        clause_agent = ClauseAnalystAgent()
+        clause_label = f"{clause_agent.provider_name} · {clause_agent.model}" if clause_agent.client else "博弈赔率模型"
         await websocket.send_json({
             "step": "clause",
-            "message": "♟️ [Node 4: 条款博弈 Agent · Gemini 3.1 Pro] 推演下修概率与强赎风险不对称赔率..."
+            "message": f"♟️ [Node 4: 条款博弈 Agent · {clause_label}] 推演下修概率与强赎风险不对称赔率..."
         })
-        clause_agent = ClauseAnalystAgent()
         clause_reviews = clause_agent.batch_evaluate(candidates)
         await websocket.send_json({
             "step": "clause_done",
@@ -734,6 +787,8 @@ async def websocket_agents_stream(websocket: WebSocket):
             clause_reviews=clause_reviews
         )
         
+        models_used = build_models_used(credit_agent, equity_agent, clause_agent)
+
         res = {
             "has_run": True,
             "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -741,6 +796,8 @@ async def websocket_agents_stream(websocket: WebSocket):
             "strategy_name": strat_name,
             "strategy_category": strat_cat,
             "strategy_params": strat_params,
+            "screened_count": len(candidates),
+            "models_used": models_used,
             "candidates": candidates,
             "credit_reviews": credit_reviews,
             "equity_reviews": equity_reviews,
@@ -750,6 +807,27 @@ async def websocket_agents_stream(websocket: WebSocket):
             "report_md": report_md
         }
         AGENT_CACHE["data"] = res
+
+        # 持久化本次投研会诊记录至关系型数据库
+        try:
+            from db import SessionLocal, AgentReportRecord
+            with SessionLocal() as session:
+                rpt_id = f"rpt_{int(datetime.now().timestamp())}"
+                rpt = AgentReportRecord(
+                    id=rpt_id,
+                    strategy_id=strategy_id,
+                    strategy_name=strat_name,
+                    run_time=res["run_time"],
+                    candidates_count=len(candidates),
+                    vetoed_count=len(vetoed_bonds),
+                    portfolio_count=len(final_portfolio),
+                    report_md=report_md,
+                    result_json=json.dumps(res, ensure_ascii=False)
+                )
+                session.add(rpt)
+                session.commit()
+        except Exception as e:
+            print("[WARN] 持久化智能体会诊记录到数据库失败:", e)
 
         # 自动广播推送飞书/微信群
         try:

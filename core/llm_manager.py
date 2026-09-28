@@ -232,11 +232,11 @@ class LLMManager:
                 "error": friendly_err
             }
 
-    def get_client(self, preferred: Optional[str] = None) -> Tuple[Optional[Any], str]:
+    def get_client_with_provider(self, preferred: Optional[str] = None) -> Tuple[Optional[Any], str, str, str]:
         """
-        获取当前可用的大模型客户端与对应模型名称。
+        获取当前可用的大模型客户端与对应模型名称、供应商代码与供应商名称。
         全智能体自适应：若指定首选供应商有 Key，则优先使用；否则自动回退到任意已配置的供应商。
-        :return: (OpenAI_client, model_name)
+        :return: (OpenAI_client, model_name, provider_key, provider_name)
         """
         from openai import OpenAI
         active_provider = os.getenv("ACTIVE_LLM_PROVIDER", "deepseek")
@@ -279,10 +279,17 @@ class LLMManager:
                         base_url=base_url,
                         timeout=30.0
                     )
-                    return client, model
+                    return client, model, p, preset["name"]
                 except Exception as e:
                     print(f"[WARN] 构造 {p} LLM Client 失败: {e}")
 
-        return None, ""
+        return None, "", "", ""
+
+    def get_client(self, preferred: Optional[str] = None) -> Tuple[Optional[Any], str]:
+        """
+        保持向下兼容：获取 (client, model_name)
+        """
+        client, model, _, _ = self.get_client_with_provider(preferred)
+        return client, model
 
 llm_manager = LLMManager()
