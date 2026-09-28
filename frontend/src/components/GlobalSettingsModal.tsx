@@ -358,19 +358,24 @@ export const GlobalSettingsModal: React.FC<GlobalSettingsModalProps> = ({
 
                 {/* API Base URL */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
-                    <Globe className="w-3.5 h-3.5 text-blue-600" />
-                    <span>API Base URL (接口端点):</span>
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700 flex items-center gap-1">
+                      <Globe className="w-3.5 h-3.5 text-blue-600" />
+                      <span>API Base URL (接口端点):</span>
+                    </label>
+                    <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded font-medium">
+                      支持中转网关 / 反向代理
+                    </span>
+                  </div>
                   <input
                     type="text"
                     value={baseUrl}
                     onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="https://api.deepseek.com/v1"
+                    placeholder={currentProviderInfo?.base_url || 'https://api.openai.com/v1'}
                     className="w-full text-xs font-mono bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                   />
                   <p className="text-[10px] text-slate-400 mt-1">
-                    默认使用官方端点，支持中转 API 代理或内网反向代理。
+                    💡 若您使用中转代理 (如 OneAPI/NewAPI/聚合网关)，请务必将此处修改为您的网关地址 (如 <code>https://your-gateway.com/v1</code>)，否则请求将直连官方被拦截。
                   </p>
                 </div>
 

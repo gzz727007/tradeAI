@@ -141,8 +141,12 @@ def get_system_status():
     if _STATUS_CACHE["data"] and (now_ts - _STATUS_CACHE["ts"] < 30.0):
         return _STATUS_CACHE["data"]
 
-    quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
-    ledger.update_daily_valuation(quotes_df, force=False)
+    try:
+        quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
+        ledger.update_daily_valuation(quotes_df, force=False)
+    except Exception as e:
+        print(f"⚠️ 系统状态接口获取实时行情异常 (已容错): {e}")
+        quotes_df = pd.DataFrame()
     
     # 检查本地数据湖状态
     from core.data_lake import CBDataLake

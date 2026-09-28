@@ -61,6 +61,12 @@ class CBDataFetcher:
             try:
                 raw_df = ak.bond_zh_cov()
             except Exception as e2:
+                if cache_file.exists():
+                    print(f"⚠️ 网络拉取行情失败 ({e2})，已自动降级读取本地历史行情缓存兜底: {cache_file}")
+                    try:
+                        return pd.read_parquet(cache_file)
+                    except Exception:
+                        pass
                 raise RuntimeError(f"❌ 无法从数据源获取可转债行情: {e2}")
 
         # 标准化字段映射
