@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AgentResult, CandidateBond, Strategy, MeetingChamber, AgentSpeech } from '../types';
 import { api } from '../api/client';
 import { AgentStudioModal } from './AgentStudioModal';
+import { AgentHistoryModal } from './AgentHistoryModal';
 import {
   Bot,
   Play,
@@ -27,7 +28,14 @@ import {
   Eye,
   FileCheck2,
   TrendingDown,
-  TrendingUp
+  TrendingUp,
+  History,
+  PlusCircle,
+  RotateCcw,
+  ArrowRight,
+  ShieldCheck,
+  Target,
+  BarChart2
 } from 'lucide-react';
 
 interface AgentConsultationProps {
@@ -50,6 +58,8 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   const [chambersList, setChambersList] = useState<MeetingChamber[]>([]);
   const [currentChamberId, setCurrentChamberId] = useState<string>('chamber_cb_roundtable');
   const [studioOpen, setStudioOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCount, setHistoryCount] = useState(0);
   const [expandedEvidence, setExpandedEvidence] = useState<Record<string, boolean>>({});
 
   const [strategiesList, setStrategiesList] = useState<Strategy[]>(strategies);
@@ -73,6 +83,17 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
 
   const activeStrategy = strategiesList.find((s) => s.id === currentStrategyId);
 
+  const fetchHistoryCount = async () => {
+    try {
+      const data = await api.getAgentReportsHistory();
+      if (Array.isArray(data)) {
+        setHistoryCount(data.length);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const loadChambers = async () => {
     try {
       const data = await api.getChambers();
@@ -91,6 +112,9 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
     try {
       const data = await api.getAgentResult();
       if (data.has_run) {
+        if (selectedStrategyId && data.strategy_id !== selectedStrategyId) {
+          return;
+        }
         setResult(data);
         if (data.chamber_id) {
           setCurrentChamberId(data.chamber_id);
@@ -110,6 +134,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   useEffect(() => {
     loadCachedResult();
     loadChambers();
+    fetchHistoryCount();
     api.getLLMConfig().then((data) => setLlmConfig(data)).catch(() => {});
   }, []);
 
@@ -142,6 +167,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
           setSelectedBondCode(data.data.final_portfolio[0].bond_code);
         }
         setLoading(false);
+        fetchHistoryCount();
         ws.close();
       } else if (data.step === 'error') {
         alert(`会诊失败: ${data.message}`);
@@ -163,6 +189,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
             setSelectedBondCode(data.final_portfolio[0].bond_code);
           }
           setLoading(false);
+          fetchHistoryCount();
         })
         .catch((e) => {
           alert(`请求失败: ${e.message}`);
@@ -234,7 +261,32 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {result && result.has_run && (
+              <button
+                onClick={() => setResult(null)}
+                className="flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs transition-all cursor-pointer"
+                title="清空当前结果，切换至全新开庭界面"
+              >
+                <PlusCircle className="w-3.5 h-3.5 text-emerald-600" />
+                <span>✨ 开启全新会审</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setHistoryOpen(true)}
+              className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs transition-all cursor-pointer"
+              title="查看历史投研会审与裁决档案库"
+            >
+              <History className="w-3.5 h-3.5 text-indigo-600" />
+              <span>📜 历史档案库</span>
+              {historyCount > 0 && (
+                <span className="text-[10px] bg-indigo-100 text-indigo-700 font-mono px-1.5 py-0.2 rounded-full font-bold">
+                  {historyCount}
+                </span>
+              )}
+            </button>
+
             <button
               onClick={() => setStudioOpen(true)}
               className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs transition-all cursor-pointer"
@@ -281,7 +333,12 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
               return (
                 <button
                   key={ch.id}
-                  onClick={() => setCurrentChamberId(ch.id)}
+                  onClick={() => {
+                    setCurrentChamberId(ch.id);
+                    if (result && result.chamber_id && result.chamber_id !== ch.id) {
+                      setResult(null);
+                    }
+                  }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border shrink-0 ${
                     isActive
                       ? isCourt
@@ -322,6 +379,9 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 const val = e.target.value;
                 setCurrentStrategyId(val);
                 if (onSelectStrategyId) onSelectStrategyId(val);
+                if (result && (result.strategy_id || 'default') !== val) {
+                  setResult(null);
+                }
               }}
               className="text-xs font-semibold bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-slate-800 shadow-2xs focus:outline-hidden focus:border-blue-500 cursor-pointer"
             >
@@ -379,6 +439,38 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
       {/* Consultation Results */}
       {result && result.has_run && (
         <div className="space-y-4">
+          {/* Archived Report Status Banner */}
+          {result.is_archived && (
+            <div className="bg-linear-to-r from-amber-50 to-orange-50 border border-amber-300 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-900 shadow-2xs">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs text-base">
+                  📜
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 font-bold text-xs text-amber-900">
+                    <span>当前正在调阅【历史归档投研报告】</span>
+                    <span className="text-[10px] bg-amber-200/90 text-amber-800 px-2 py-0.5 rounded-full font-semibold">
+                      会审归档时间: {result.run_time || '历史记录'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-amber-700 mt-0.5">
+                    此快照来自历史档案库。您可以查阅当时的辩论全景与投资裁决，或随时点击右侧按钮退出并进入全新的会审就绪页。
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setResult(null);
+                  setSelectedBondCode('');
+                }}
+                className="shrink-0 flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs cursor-pointer transition-all"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+                <span>退出查阅 · 开启全新会审</span>
+              </button>
+            </div>
+          )}
+
           {/* Strategy Attribution / Quantamental Pipeline Summary Card */}
           <div className="bg-gradient-to-r from-blue-50/70 via-indigo-50/50 to-purple-50/70 border border-blue-200/80 rounded-xl p-3.5 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -811,21 +903,180 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
         </div>
       )}
 
-      {/* Empty State before Running */}
+      {/* Fresh Deliberation Workspace Ready State */}
       {(!result || !result.has_run) && !loading && (
-        <div className="bg-white rounded-xl border border-slate-200 p-12 text-center shadow-xs">
-          <Bot className="w-12 h-12 text-blue-500 mx-auto mb-3 opacity-80" />
-          <h4 className="font-bold text-sm text-slate-800 mb-1">今日尚未启动多智能体联合会诊</h4>
-          <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-            点击上方【🚀 启动多智能体联合会诊】或【⚖️ 敲槌开启法庭裁决】按钮，系统将调度前沿 AI 专家并行执行量化初筛、信用穿透审查、动量题材评分与深度辩论。
-          </p>
-          <button
-            onClick={handleStartConsultation}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-xs cursor-pointer inline-flex items-center gap-1.5"
-          >
-            <Play className="w-3.5 h-3.5" />
-            <span>立即启动今日会诊</span>
-          </button>
+        <div className="bg-white rounded-2xl border border-slate-200/90 p-8 shadow-xs space-y-6">
+          {/* Header Banner */}
+          <div className="text-center max-w-2xl mx-auto space-y-2">
+            <div className={`w-14 h-14 mx-auto rounded-2xl text-white flex items-center justify-center shadow-md ${
+              isCourtroomMode
+                ? 'bg-linear-to-tr from-amber-600 via-rose-600 to-amber-700'
+                : 'bg-linear-to-tr from-blue-600 via-indigo-600 to-purple-600'
+            }`}>
+              {isCourtroomMode ? <Scale className="w-7 h-7" /> : <Bot className="w-7 h-7" />}
+            </div>
+            <h4 className="font-extrabold text-base text-slate-900 tracking-tight">
+              {isCourtroomMode ? '⚖️ 金融多空法庭 · 审判席位已就绪' : '🎯 全新投研会商工作台 · 专家席位已就绪'}
+            </h4>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              历史投研数据已独立封装入库。当前工作台处于全新的就绪态，您可以确认当前量化前置筛选条件与出庭智能体阵容，随时敲槌开启穿透审查。
+            </p>
+          </div>
+
+          {/* 3-Step Deliberation Pipeline Showcase */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+            {/* Step 1: Strategy Quant Screening */}
+            <div className="bg-slate-50/80 rounded-xl p-4 border border-slate-200/80 hover:border-blue-300 transition-all space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                  步骤 01 · 策略量化初筛
+                </span>
+                <Target className="w-4 h-4 text-blue-600" />
+              </div>
+              <div className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                <span>{activeStrategy?.name || '系统默认量化初筛'}</span>
+                <span className="text-[10px] font-normal text-slate-500">({activeStrategy?.category || '可转债'})</span>
+              </div>
+              <div className="space-y-1 text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-100">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">准入价格:</span>
+                  <span className="font-semibold text-slate-700">{activeStrategy?.params?.min_price || 95}~{activeStrategy?.params?.max_price || 125} 元</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">规模限制:</span>
+                  <span className="font-semibold text-slate-700">&le; {activeStrategy?.params?.max_scale || 5} 亿元</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">溢价上限:</span>
+                  <span className="font-semibold text-slate-700">&le; {activeStrategy?.params?.max_premium || 50}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">排序因子:</span>
+                  <span className="font-semibold text-slate-700">{activeStrategy?.params?.sort_by || '双低指标'}</span>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                从全市场 500+ 只转债中计算因子并初选 Top 标的名额，排除不满足硬性量化指标的标的。
+              </p>
+            </div>
+
+            {/* Step 2: Chamber & Agent Examination */}
+            <div className={`rounded-xl p-4 border transition-all space-y-2.5 ${
+              isCourtroomMode
+                ? 'bg-amber-50/40 border-amber-200/80 hover:border-amber-300'
+                : 'bg-purple-50/40 border-purple-200/80 hover:border-purple-300'
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  isCourtroomMode ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-purple-700 bg-purple-50 border-purple-200'
+                }`}>
+                  步骤 02 · 智能体控辩质询
+                </span>
+                {isCourtroomMode ? <Scale className="w-4 h-4 text-amber-600" /> : <MessageSquare className="w-4 h-4 text-purple-600" />}
+              </div>
+              <div className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                <span>{activeChamber?.name || '投研专家圆桌'}</span>
+                <span className="text-[10px] font-normal text-slate-500">({activeChamber?.agent_ids?.length || 4} 位专家)</span>
+              </div>
+              <div className="space-y-1 text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-100">
+                <div className="flex items-center gap-1.5 text-slate-700">
+                  <span>🛡️</span>
+                  <span>首席风控官 (排雷 / 信用穿透 / 一票否决)</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-slate-700">
+                  <span>🚀</span>
+                  <span>正股动量分析师 (弹性评分 / 题材研判)</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-slate-700">
+                  <span>♟️</span>
+                  <span>条款博弈专家 (下修诉求 / 强赎预警)</span>
+                </div>
+                {isCourtroomMode && (
+                  <div className="flex items-center gap-1.5 text-amber-800 font-medium">
+                    <span>⚔️</span>
+                    <span>控方检察官 VS 辩方律师 多轮质证</span>
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                {isCourtroomMode
+                  ? '控方指出财务暗坑，辩方提交价值证据，多轮交锋记录留存审计。'
+                  : '三大专家从信用底线、进攻弹性和条款博弈独立给出定性结论。'}
+              </p>
+            </div>
+
+            {/* Step 3: PM Verdict & Final Allocation */}
+            <div className="bg-slate-50/80 rounded-xl p-4 border border-slate-200/80 hover:border-emerald-300 transition-all space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  步骤 03 · 终审合议配置
+                </span>
+                <Crown className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                <span>投资总监 (PM) / 首席法官裁决</span>
+              </div>
+              <div className="space-y-1 text-[11px] text-slate-600 bg-white p-2.5 rounded-lg border border-slate-100">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">否决机制:</span>
+                  <span className="font-semibold text-rose-600">重大信用瑕疵一票否决</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">组合构建:</span>
+                  <span className="font-semibold text-slate-700">攻守兼备权重智能拟合</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">存证审计:</span>
+                  <span className="font-semibold text-emerald-700">全流程发言录入历史档案</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">组合建议:</span>
+                  <span className="font-semibold text-slate-700">精选 Top 3~10 优质标的</span>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                综合每位专家的论证细节，输出可追溯的持仓建议与投研辩论报告。
+              </p>
+            </div>
+          </div>
+
+          {/* Action Buttons Center */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
+            <button
+              onClick={handleStartConsultation}
+              disabled={loading}
+              className={`flex items-center justify-center gap-2 text-white text-sm font-bold px-7 py-3 rounded-xl shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50 w-full sm:w-auto ${
+                isCourtroomMode
+                  ? 'bg-linear-to-r from-amber-600 via-rose-600 to-amber-700 hover:from-amber-700 hover:to-rose-700'
+                  : 'bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700'
+              }`}
+            >
+              {isCourtroomMode ? <Gavel className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+              <span>
+                {isCourtroomMode
+                  ? `敲槌开庭！开启【${activeStrategy?.name || '默认策略'}】多空裁决`
+                  : `立即启动【${activeStrategy?.name || '默认策略'}】联合会审`}
+              </span>
+            </button>
+
+            {historyCount > 0 && (
+              <button
+                onClick={() => setHistoryOpen(true)}
+                className="flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold px-4 py-3 rounded-xl shadow-2xs transition-all cursor-pointer w-full sm:w-auto"
+              >
+                <History className="w-4 h-4 text-indigo-600" />
+                <span>调阅往期历史档案 ({historyCount})</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setStudioOpen(true)}
+              className="flex items-center justify-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold px-3 py-3 rounded-xl shadow-2xs transition-all cursor-pointer w-full sm:w-auto"
+            >
+              <Settings className="w-3.5 h-3.5 text-slate-500" />
+              <span>定制智能体</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -834,6 +1085,27 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
         isOpen={studioOpen}
         onClose={() => setStudioOpen(false)}
         onAgentsChanged={loadChambers}
+      />
+
+      {/* History Archive Modal */}
+      <AgentHistoryModal
+        isOpen={historyOpen}
+        onClose={() => {
+          setHistoryOpen(false);
+          fetchHistoryCount();
+        }}
+        onSelectReport={(rep) => {
+          setResult(rep);
+          if (rep.final_portfolio && rep.final_portfolio.length > 0) {
+            setSelectedBondCode(rep.final_portfolio[0].bond_code);
+          }
+          if (rep.chamber_id) {
+            setCurrentChamberId(rep.chamber_id);
+          }
+          if (rep.strategy_id) {
+            setCurrentStrategyId(rep.strategy_id);
+          }
+        }}
       />
     </div>
   );

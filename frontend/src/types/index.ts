@@ -232,4 +232,18 @@ export interface AgentResult {
   }>;
   vetoed_bonds: any[];
   report_md?: string;
+  is_archived?: boolean;
+}
+
+export interface AgentReportSummary {
+  id: string;
+  strategy_id?: string;
+  strategy_name: string;
+  run_time: string;
+  candidates_count: number;
+  vetoed_count: number;
+  portfolio_count: number;
+  chamber_name: string;
+  chamber_type: 'ROUNDTABLE' | 'COURTROOM';
+  created_at: string;
 }

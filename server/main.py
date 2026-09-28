@@ -650,6 +650,73 @@ def get_agents_result():
         pass
     return {"has_run": False}
 
+@app.get("/api/agents/history")
+def get_agent_reports_history(limit: int = 50):
+    """获取所有历史投研会审报告的归档清单"""
+    from db import SessionLocal, AgentReportRecord
+    with SessionLocal() as session:
+        records = session.query(AgentReportRecord).order_by(AgentReportRecord.created_at.desc()).limit(limit).all()
+        items = []
+        for r in records:
+            chamber_name = "可转债投研圆桌"
+            chamber_type = "ROUNDTABLE"
+            if r.result_json:
+                try:
+                    rj = json.loads(r.result_json)
+                    chamber_name = rj.get("chamber_name", chamber_name)
+                    chamber_type = rj.get("chamber_type", chamber_type)
+                except Exception:
+                    pass
+            items.append({
+                "id": r.id,
+                "strategy_id": r.strategy_id,
+                "strategy_name": r.strategy_name or "默认初筛",
+                "run_time": r.run_time,
+                "candidates_count": r.candidates_count,
+                "vetoed_count": r.vetoed_count,
+                "portfolio_count": r.portfolio_count,
+                "chamber_name": chamber_name,
+                "chamber_type": chamber_type,
+                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else r.run_time
+            })
+        return items
+
+@app.get("/api/agents/history/{report_id}")
+def get_agent_report_detail(report_id: str):
+    """获取指定单期历史会审报告的完整结果与全量发言数据"""
+    from db import SessionLocal, AgentReportRecord
+    with SessionLocal() as session:
+        r = session.query(AgentReportRecord).filter(AgentReportRecord.id == report_id).first()
+        if not r:
+            raise HTTPException(status_code=404, detail="未找到该历史会审报告")
+        if r.result_json:
+            try:
+                data = json.loads(r.result_json)
+                data["is_archived"] = True
+                return data
+            except Exception:
+                pass
+        return {
+            "has_run": True,
+            "run_time": r.run_time,
+            "strategy_id": r.strategy_id,
+            "strategy_name": r.strategy_name,
+            "report_md": r.report_md,
+            "is_archived": True
+        }
+
+@app.delete("/api/agents/history/{report_id}")
+def delete_agent_report(report_id: str):
+    """删除指定的历史会审归档"""
+    from db import SessionLocal, AgentReportRecord
+    with SessionLocal() as session:
+        r = session.query(AgentReportRecord).filter(AgentReportRecord.id == report_id).first()
+        if r:
+            session.delete(r)
+            session.commit()
+            return {"success": True, "message": "历史报告已删除"}
+        raise HTTPException(status_code=404, detail="未找到该历史会审报告")
+
 @app.post("/api/agents/run")
 async def run_agents_pipeline(
     strategy_id: Optional[str] = Query(None),

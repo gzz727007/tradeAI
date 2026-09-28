@@ -361,6 +361,32 @@ export const api = {
     }
     return res.json();
   },
+
+  // 历史投研报告归档 (Agent Consultation History Archive)
+  getAgentReportsHistory: async (): Promise<any[]> => {
+    const res = await fetch(`${API_BASE}/agents/history`);
+    return res.json();
+  },
+
+  getAgentReportDetail: async (id: string): Promise<AgentResult> => {
+    const res = await fetch(`${API_BASE}/agents/history/${id}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '获取历史报告详情失败');
+    }
+    return res.json();
+  },
+
+  deleteAgentReport: async (id: string) => {
+    const res = await fetch(`${API_BASE}/agents/history/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '删除历史报告失败');
+    }
+    return res.json();
+  },
 };
 
 
