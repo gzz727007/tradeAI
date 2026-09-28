@@ -16,6 +16,7 @@ from db.session import SessionLocal
 from db.models import AgentDefinition, MeetingChamber, AgentReportRecord
 from core.llm_manager import llm_manager
 from core.state import BondCandidate
+from core.dossier_manager import dossier_manager
 
 
 class AgentChamberManager:
@@ -391,11 +392,13 @@ class AgentChamberManager:
                 }
             }
 
-        # 尝试调用大模型
-        prompt = f"请作为首席信用风控官审查转债: {b_name} ({b_code}), 正股: {stock_name}, 现价: {price}元, 评级: {rating}。是否存在重大退市违约风险？简明扼要给出结论 (100字内)。"
+        # 尝试调用大模型 (注入全景案卷)
+        dossier = dossier_manager.get_bond_dossier(cand)
+        prompt = dossier_manager.format_credit_prompt(dossier)
         llm_statement, model_used = cls._call_agent_llm(agent_info, prompt) if agent_info else (None, "规则引擎")
 
         statement = llm_statement or f"基本面审查完毕：发债公司 {stock_name} 财务指标健康，主体信用评级 {rating} 稳健，无退市或质押爆仓风险，准予通过。"
+        recent_notice_title = dossier["notices"][0]["title"] if dossier["notices"] else "近期无异常违约处罚披露"
         return {
             "review": {"bond_code": b_code, "risk_level": "PASS", "reason": statement},
             "speech": {
@@ -407,26 +410,37 @@ class AgentChamberManager:
                 "stance": "PASS",
                 "score": 90.0,
                 "statement": statement,
-                "key_evidence": [f"信用评级: {rating}", "大股东质押率正常", "无退市或立案风险"],
+                "key_evidence": [
+                    f"信用评级: {rating}",
+                    f"纯债底价值: {dossier['pure_debt_value']}元 (安全垫保护)",
+                    f"最新公告: {recent_notice_title}"
+                ],
                 "timestamp": datetime.now().strftime("%H:%M:%S")
             }
         }
 
     @classmethod
     def _evaluate_cb_equity(cls, cand: BondCandidate, agent_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """圆桌: 正股动量节点评估"""
+        """圆桌: 正股动量节点评估 (注入风口题材案卷)"""
         b_code = cand["bond_code"]
         b_name = cand["bond_name"]
         premium = cand["premium_rate"]
         stock_name = cand["stock_name"]
 
+        dossier = dossier_manager.get_bond_dossier(cand)
         base_score = max(30, min(95, int(100 - premium * 1.1)))
-        prompt = f"请作为正股动量分析师，分析正股 {stock_name} (转债溢价率 {premium}%) 的题材风口与技术走势动量，给出 0-100 分及分析 (100字内)。"
+        prompt = dossier_manager.format_equity_prompt(dossier)
         llm_statement, model_used = cls._call_agent_llm(agent_info, prompt) if agent_info else (None, "量化算法")
 
-        statement = llm_statement or f"正股 {stock_name} 处于均线良性格局，溢价率仅 {premium}%，转债传导进攻弹性良好，动量评分 {base_score}/100。"
+        concepts_str = "、".join(dossier["concepts"][:3]) if dossier["concepts"] else "稳健题材"
+        statement = llm_statement or f"正股 {stock_name} 绑定核心风口【{concepts_str}】，溢价率仅 {premium}%，转股价值 {dossier['convert_value']}元，进攻弹性良好，动量评分 {base_score}/100。"
         return {
-            "review": {"bond_code": b_code, "momentum_score": base_score, "sector_themes": ["景气科技", "智能制造"], "catalyst_summary": statement},
+            "review": {
+                "bond_code": b_code,
+                "momentum_score": base_score,
+                "sector_themes": dossier["concepts"][:4] if dossier["concepts"] else ["景气科技", "智能制造"],
+                "catalyst_summary": statement
+            },
             "speech": {
                 "speaker_id": "cb_equity",
                 "speaker_name": agent_info.get("name", "正股动量分析师") if agent_info else "正股动量分析师",
@@ -436,26 +450,38 @@ class AgentChamberManager:
                 "stance": "BULL",
                 "score": float(base_score),
                 "statement": statement,
-                "key_evidence": [f"转债溢价率: {premium}%", f"弹性动量测算: {base_score}分", "题材资金关注度高"],
+                "key_evidence": [
+                    f"核心题材: {concepts_str}",
+                    f"转债溢价率: {premium}%",
+                    f"转股价值弹性: {dossier['convert_value']}元"
+                ],
                 "timestamp": datetime.now().strftime("%H:%M:%S")
             }
         }
 
     @classmethod
     def _evaluate_cb_clause(cls, cand: BondCandidate, agent_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """圆桌: 条款博弈节点评估"""
+        """圆桌: 条款博弈节点评估 (注入条款精算案卷)"""
         b_code = cand["bond_code"]
         b_name = cand["bond_name"]
         price = cand["price"]
         scale = cand["remaining_scale"]
         call_risk = "HIGH" if price >= 130 else ("MEDIUM" if price >= 122 else "LOW")
 
-        prompt = f"请作为条款博弈专家，分析转债 {b_name} (价格 {price}元, 规模 {scale}亿) 的下修博弈空间与强赎风险 (100字内)。"
+        dossier = dossier_manager.get_bond_dossier(cand)
+        prompt = dossier_manager.format_clause_prompt(dossier)
         llm_statement, model_used = cls._call_agent_llm(agent_info, prompt) if agent_info else (None, "博弈模型")
 
-        statement = llm_statement or f"转债价格 {price} 元处于安全博弈区，强赎风险等级为 {call_risk}。剩余规模 {scale} 亿较适中，公司转股诉求明确，具备不对称赔率。"
+        statement = llm_statement or (
+            f"转债价格 {price} 元处于安全博弈区，强赎风险等级为 {call_risk}。剩余规模 {scale} 亿流通盘小，"
+            f"大股东转股诉求强烈，正股价距下修线 {dossier['dist_to_down_pct']}%，具备绝佳不对称赔率。"
+        )
+
+        down_desc = f"正股价距下修线 {dossier['dist_to_down_pct']}%"
+        call_desc = f"距强赎触发尚有 {dossier['dist_to_call_pct']}%" if dossier['dist_to_call_pct'] > 20 else f"距强赎仅差 {dossier['dist_to_call_pct']}%"
+
         return {
-            "review": {"bond_code": b_code, "down_revision_potential": 70.0, "call_risk_level": call_risk, "game_summary": statement},
+            "review": {"bond_code": b_code, "down_revision_potential": 75.0, "call_risk_level": call_risk, "game_summary": statement},
             "speech": {
                 "speaker_id": "cb_clause",
                 "speaker_name": agent_info.get("name", "条款博弈专家") if agent_info else "条款博弈专家",
@@ -463,9 +489,13 @@ class AgentChamberManager:
                 "role_type": "review",
                 "model_used": model_used,
                 "stance": "BULL" if call_risk == "LOW" else "WARN",
-                "score": 75.0,
+                "score": 78.0,
                 "statement": statement,
-                "key_evidence": [f"强赎风险等级: {call_risk}", f"剩余存续规模: {scale}亿", "下修期权非对称收益显著"],
+                "key_evidence": [
+                    f"下修博弈空间: {down_desc}",
+                    f"强赎安全垫: {call_desc}",
+                    f"流通规模: {scale}亿 (大股东转股诉求极强)"
+                ],
                 "timestamp": datetime.now().strftime("%H:%M:%S")
             }
         }
@@ -476,7 +506,7 @@ class AgentChamberManager:
 
     @classmethod
     def _court_bear_prosecution(cls, cand: BondCandidate, agent_info: Dict[str, Any]) -> Dict[str, Any]:
-        """法庭第 1 轮: 做空公诉人起诉指控 (Bear Prosecution)"""
+        """法庭第 1 轮: 做空公诉人起诉指控 (Bear Prosecution - 基于全案卷宗)"""
         b_code = cand["bond_code"]
         b_name = cand["bond_name"]
         price = cand["price"]
@@ -484,10 +514,16 @@ class AgentChamberManager:
         scale = cand["remaining_scale"]
         stock_name = cand["stock_name"]
 
+        dossier = dossier_manager.get_bond_dossier(cand)
+        dossier_text = dossier_manager.format_court_dossier(dossier)
+
         prompt = f"""
-        【案件审理】被告标的: {b_name} ({b_code}), 正股: {stock_name}, 当前转债价格: {price}元, 转股溢价率: {premium}%, 存续规模: {scale}亿。
-        作为激进的空方公诉人，请向法庭正式提起【做空公诉陈词】（列出 3 大致命隐患与做空依据，主张驳回建仓），言辞犀利严谨，字数120字内。
-        """
+【法庭案件审理 · 公诉指控阶段】
+法庭已调取被告标的的全案卷宗如下：
+{dossier_text}
+
+作为激进的空方公诉人，请依据上述真实精算数据与案卷漏洞向法庭提起【做空公诉陈词】（列出 3 大致命隐患与做空依据，主张驳回建仓），言辞犀利严谨，字数120字内。
+""".strip()
         llm_statement, model_used = cls._call_agent_llm(agent_info, prompt) if agent_info else (None, "做空模型")
 
         statement = llm_statement or (
@@ -504,30 +540,41 @@ class AgentChamberManager:
             "stance": "BEAR",
             "score": 25.0,
             "statement": statement,
-            "key_evidence": [f"溢价率迟钝风险: {premium}%", f"面值偏离程度: {price}元", "做空指控: 估值透支与流动性隐患"],
+            "key_evidence": [
+                f"溢价率迟钝风险: {premium}%",
+                f"纯债底溢价溢价率: {dossier['pure_debt_premium']}%",
+                "做空指控: 估值透支与流动性隐患"
+            ],
             "timestamp": datetime.now().strftime("%H:%M:%S")
         }
 
     @classmethod
     def _court_bull_defense(cls, cand: BondCandidate, agent_info: Dict[str, Any], prosecutor_allegation: str) -> Dict[str, Any]:
-        """法庭第 2 轮: 多头辩护律师抗辩 (Bull Defense)"""
+        """法庭第 2 轮: 多头辩护律师抗辩 (Bull Defense - 举证全案事实)"""
         b_code = cand["bond_code"]
         b_name = cand["bond_name"]
         price = cand["price"]
         dlow = cand["double_low"]
         stock_name = cand["stock_name"]
 
+        dossier = dossier_manager.get_bond_dossier(cand)
+        dossier_text = dossier_manager.format_court_dossier(dossier)
+
         prompt = f"""
-        【抗辩辩护】被告标的: {b_name} ({b_code}), 正股: {stock_name}, 双低值: {dlow}。
-        空方公诉人的指控如下：
-        “{prosecutor_allegation}”
-        请作为买方多头辩护律师，针对上述做空指控进行有力抗辩，列举标的核心护城河与非对称暴利赔率，说明为何做空论点不足为惧，字数120字内。
-        """
+【法庭案件审理 · 辩方举证抗辩阶段】
+被告标的完整案卷如下：
+{dossier_text}
+
+空方公诉人的做空指控如下：
+“{prosecutor_allegation}”
+
+请作为买方多头辩护律师，针对上述做空指控进行有力抗辩，引用案卷中证明标的具备债底防御、题材风口或不对称暴利赔率的核心证据，说明为何做空论点站不住脚，坚决主张建仓，字数120字内。
+""".strip()
         llm_statement, model_used = cls._call_agent_llm(agent_info, prompt) if agent_info else (None, "买方价值模型")
 
         statement = llm_statement or (
-            f"【辩护陈词】公诉人言过其实！标的 {b_name} 当前双低值仅 {dlow}，不仅拥有坚固的债底安全垫，"
-            f"且正股 {stock_name} 业绩反转信号明确。转债特有的向下修正期权保证了『下有保底、上不封顶』的不对称赔率优势，辩护人坚决主张准予建仓！"
+            f"【辩护陈词】公诉人言过其实！标的 {b_name} 当前双低值仅 {dlow}，纯债底 {dossier['pure_debt_value']} 元防线坚固，"
+            f"且正股 {stock_name} 绑定【{'、'.join(dossier['concepts'][:2])}】风口。转债向下修正期权保证了『下有保底、上不封顶』的不对称赔率优势，辩护人坚决主张准予建仓！"
         )
 
         return {
@@ -539,7 +586,11 @@ class AgentChamberManager:
             "stance": "BULL",
             "score": 85.0,
             "statement": statement,
-            "key_evidence": [f"双低估值安全垫: {dlow}", "非对称期权赔率优异", "正股具备反转催化预期差"],
+            "key_evidence": [
+                f"双低估值安全垫: {dlow}",
+                f"纯债底防护: {dossier['pure_debt_value']}元",
+                f"核心风口题材: {'、'.join(dossier['concepts'][:3])}"
+            ],
             "timestamp": datetime.now().strftime("%H:%M:%S")
         }
 
