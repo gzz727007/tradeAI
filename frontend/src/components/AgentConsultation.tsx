@@ -386,19 +386,29 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 <Sparkles className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs font-bold text-slate-800">
-                    量化前置源：【{result.strategy_name || '默认量化初筛'}】
+                    本报告量化前置源：【{result.strategy_name || '默认量化初筛'}】
                   </span>
                   {result.strategy_category && (
                     <span className="text-[10px] font-semibold bg-blue-100/70 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
                       {result.strategy_category}
                     </span>
                   )}
+                  {result.run_time && (
+                    <span className="text-[10px] text-slate-400">
+                      (会审于 {result.run_time})
+                    </span>
+                  )}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  全市场 500+ 只转债 → 量化策略初筛入围 <b className="text-blue-600 font-bold">{result.screened_count || result.candidates?.length || 0}</b> 只 → 4 位专家全景穿透审查 (排除高危 <b className="text-rose-600 font-bold">{result.vetoed_bonds?.length || 0}</b> 只) → 终审精选入库 <b className="text-emerald-600 font-bold">{result.final_portfolio?.length || 0}</b> 只
+                  全市场 500+ 只转债 → 量化策略初筛入围 <b className="text-blue-600 font-bold">{result.screened_count || result.candidates?.length || 0}</b> 只 → 多智能体全景穿透审查 (排除高危 <b className="text-rose-600 font-bold">{result.vetoed_bonds?.length || 0}</b> 只) → 终审精选入库 <b className="text-emerald-600 font-bold">{result.final_portfolio?.length || 0}</b> 只
                 </p>
+                {currentStrategyId && currentStrategyId !== (result.strategy_id || 'default') && (
+                  <div className="mt-1.5 text-[11px] text-amber-700 bg-amber-50/90 border border-amber-200 rounded px-2 py-0.5 inline-flex items-center gap-1">
+                    <span>💡 您已在上方切换初筛候选策略为【{activeStrategy?.name || currentStrategyId}】，点击右上角橙色【{isCourtroomMode ? '敲槌！开启金融多空法庭裁决' : '召开今日投委会实时会诊'}】按钮即可重新会审！</span>
+                  </div>
+                )}
               </div>
             </div>
 
