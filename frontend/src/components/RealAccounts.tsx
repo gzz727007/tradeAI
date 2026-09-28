@@ -10,7 +10,8 @@ import {
   AlertCircle,
   Briefcase,
   Layers,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react';
 
 interface RealAccountsProps {
@@ -186,7 +187,48 @@ export const RealAccounts: React.FC<RealAccountsProps> = ({ strategies }) => {
         </div>
       )}
 
-      {curAcc && (
+      {/* Loading Skeleton */}
+      {loading && accounts.length === 0 && (
+        <div className="space-y-4 animate-pulse">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+                <div className="h-3 bg-slate-200 rounded w-20"></div>
+                <div className="h-6 bg-slate-200 rounded w-28"></div>
+                <div className="h-3 bg-slate-100 rounded w-32"></div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white p-8 rounded-xl border border-slate-200 text-center py-12 space-y-2">
+            <RefreshCw className="w-6 h-6 text-blue-600 animate-spin mx-auto" />
+            <div className="text-xs font-semibold text-slate-700">正在极速加载实盘账户与持仓资产...</div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!loading && accounts.length === 0 && (
+        <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm text-center py-16 space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mx-auto">
+            <Wallet className="w-8 h-8" />
+          </div>
+          <div>
+            <h3 className="font-bold text-base text-slate-800">暂无实盘交易账户</h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              创建实盘账户以绑定量化策略，记录真实买卖调仓、持仓成本与资产净值走势。
+            </p>
+          </div>
+          <button
+            onClick={() => setIsNewAccModalOpen(true)}
+            className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-xs hover:shadow transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>新建实盘账户</span>
+          </button>
+        </div>
+      )}
+
+      {curAcc && accounts.length > 0 && (
         <div className="space-y-4">
           {/* Top 4 Account Balance Cards */}
           {(() => {

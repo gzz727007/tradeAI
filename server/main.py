@@ -130,10 +130,17 @@ class TradeSellRequest(BaseModel):
 # 1. 系统与行情数据 API (System & Market)
 # ==============================================================
 
+_STATUS_CACHE: Dict[str, Any] = {"data": None, "ts": 0.0}
+
 @app.get("/api/system/status")
 def get_system_status():
+    import time
+    now_ts = time.time()
+    if _STATUS_CACHE["data"] and (now_ts - _STATUS_CACHE["ts"] < 30.0):
+        return _STATUS_CACHE["data"]
+
     quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
-    ledger.update_daily_valuation(quotes_df)
+    ledger.update_daily_valuation(quotes_df, force=False)
     
     # 检查本地数据湖状态
     from core.data_lake import CBDataLake
@@ -141,7 +148,7 @@ def get_system_status():
     cached_cnt = len(cb_lake.list_cached_symbols())
     daily_ready = cb_lake.daily_file.exists()
     
-    return {
+    res = {
         "status": "online",
         "market": "CN-A-Share-CB",
         "total_bonds": len(quotes_df),
@@ -154,6 +161,9 @@ def get_system_status():
             "percentage": round(cached_cnt / 1059.0 * 100, 1)
         }
     }
+    _STATUS_CACHE["data"] = res
+    _STATUS_CACHE["ts"] = now_ts
+    return res
 
 @app.get("/api/market/quotes")
 def get_market_quotes(
@@ -386,7 +396,7 @@ def delete_backtest_record(backtest_id: str):
 @app.get("/api/accounts")
 def get_accounts(account_type: Optional[str] = None):
     quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
-    ledger.update_daily_valuation(quotes_df)
+    ledger.update_daily_valuation(quotes_df, force=False)
     return ledger.get_accounts(account_type=account_type)
 
 @app.post("/api/accounts")

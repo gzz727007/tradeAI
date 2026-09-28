@@ -682,8 +682,14 @@ class TradingLedger:
             "history_trades": acc_dict.get("history_trades", [])
         }
 
-    def update_daily_valuation(self, quotes_df: pd.DataFrame) -> Dict[str, Any]:
-        """每日收盘用真实市场价格在数据库事务中刷新所有账号的持仓市值与净值"""
+    def update_daily_valuation(self, quotes_df: pd.DataFrame, force: bool = False) -> Dict[str, Any]:
+        """每日收盘用真实市场价格在数据库事务中刷新所有账号的持仓市值与净值 (带60秒防抖缓存)"""
+        import time
+        now_ts = time.time()
+        last_val_time = getattr(self, "_last_valuation_time", 0.0)
+        if not force and (now_ts - last_val_time < 60.0):
+            return getattr(self, "_last_valuation_summary", {})
+
         price_map = {}
         for _, row in quotes_df.iterrows():
             code = str(row.get("bond_code", row.get("symbol", "")))
@@ -752,6 +758,8 @@ class TradingLedger:
                 }
 
             session.commit()
+            self._last_valuation_time = now_ts
+            self._last_valuation_summary = summary
             return summary
         except Exception:
             session.rollback()

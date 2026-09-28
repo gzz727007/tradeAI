@@ -486,100 +486,151 @@ export const PaperTournament: React.FC = () => {
         </div>
       </div>
 
-      {/* Account Cards Grid (赛马选手卡片列表) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
-        {accounts.map((acc) => {
-          const isSelected = acc.account_id === selectedAccId;
-          const latestNav = acc.nav_history?.[acc.nav_history.length - 1];
-          const totalAssets = latestNav?.total_assets || acc.total_asset || acc.initial_capital;
-          const navValue = latestNav?.nav || totalAssets / acc.initial_capital;
-          const profitPct = Math.round((navValue - 1.0) * 10000) / 100;
-          const status = acc.status || 'ACTIVE';
-
-          let statusBadge = (
-            <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-semibold border border-emerald-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              赛马运行中
-            </span>
-          );
-          if (status === 'PAUSED') {
-            statusBadge = (
-              <span className="inline-flex items-center gap-1 text-[11px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-semibold border border-amber-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                已暂停
-              </span>
-            );
-          } else if (status === 'ENDED') {
-            statusBadge = (
-              <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold border border-slate-300">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                已归档
-              </span>
-            );
-          } else if (status === 'IDLE') {
-            statusBadge = (
-              <span className="inline-flex items-center gap-1 text-[11px] bg-slate-50 text-slate-500 px-2 py-0.5 rounded-full font-semibold border border-slate-200">
-                未启动
-              </span>
-            );
-          }
-
-          return (
-            <div
-              key={acc.account_id}
-              onClick={() => handleSelectAccount(acc.account_id)}
-              className={`bg-white p-4 rounded-xl border transition-all cursor-pointer relative ${
-                isSelected
-                  ? 'border-indigo-600 shadow-md ring-2 ring-indigo-500/15'
-                  : 'border-slate-200 hover:border-slate-300 hover:shadow-xs'
-              }`}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <div className="font-bold text-xs text-slate-900 truncate max-w-[150px]">
-                  {acc.account_name}
+      {/* Loading Skeleton State (极速骨架屏，避免白屏等待) */}
+      {loading && accounts.length === 0 && (
+        <div className="space-y-4 animate-pulse">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
+                <div className="flex justify-between items-center">
+                  <div className="h-4 bg-slate-200 rounded w-28"></div>
+                  <div className="h-4 bg-slate-100 rounded w-16"></div>
                 </div>
-                {statusBadge}
+                <div className="h-7 bg-slate-200 rounded w-36"></div>
+                <div className="flex justify-between pt-2 border-t border-slate-100">
+                  <div className="h-3 bg-slate-100 rounded w-20"></div>
+                  <div className="h-3 bg-slate-100 rounded w-16"></div>
+                </div>
               </div>
+            ))}
+          </div>
 
-              <div className="flex items-baseline justify-between mb-1.5">
-                <span className="text-xl font-extrabold text-slate-900">
-                  ¥{totalAssets.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-                <span
-                  className={`text-xs font-bold flex items-center ${
-                    profitPct >= 0 ? 'text-emerald-600' : 'text-rose-600'
-                  }`}
-                >
-                  {profitPct >= 0 ? <ArrowUpRight className="w-3.5 h-3.5 mr-0.5" /> : <ArrowDownRight className="w-3.5 h-3.5 mr-0.5" />}
-                  {profitPct >= 0 ? '+' : ''}
-                  {profitPct.toFixed(2)}%
-                </span>
-              </div>
+          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-2xs text-center py-12 space-y-3">
+            <RefreshCw className="w-7 h-7 text-indigo-500 animate-spin mx-auto" />
+            <div className="text-xs font-bold text-slate-700">正在极速加载模拟赛马账户与净值曲线...</div>
+            <div className="text-[11px] text-slate-400">正在对接真实行情数据湖并完成持仓每日估值</div>
+          </div>
+        </div>
+      )}
 
-              <div className="flex justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-                <span>
-                  当前净值: <b className="text-slate-800">{navValue.toFixed(4)}</b>
-                </span>
-                <span>
-                  现金: <b className="text-slate-800">¥{acc.available_cash.toLocaleString()}</b>
-                </span>
-              </div>
+      {/* Empty State (无模拟盘时的指引卡片) */}
+      {!loading && accounts.length === 0 && (
+        <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm text-center py-16 space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 mx-auto">
+            <Gamepad2 className="w-8 h-8" />
+          </div>
+          <div>
+            <h3 className="font-bold text-base text-slate-800">暂无正在运行的实盘模拟赛马账户</h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              模拟赛马可让您的量化策略在前向真实行情中每日自动选券、调仓并推演真实净值走势，对比中证转债基准，零真金白银风险！
+            </p>
+          </div>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-xs hover:shadow transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>立即创建第一个赛马账户</span>
+          </button>
+        </div>
+      )}
 
-              <div className="mt-2 text-[10px] text-slate-500 truncate flex items-center justify-between">
-                <span className="truncate">
-                  策略: <b className="text-indigo-600">{acc.associated_strategy}</b>
+      {/* Account Cards Grid (赛马选手卡片列表) */}
+      {accounts.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+          {accounts.map((acc) => {
+            const isSelected = acc.account_id === selectedAccId;
+            const latestNav = acc.nav_history?.[acc.nav_history.length - 1];
+            const totalAssets = latestNav?.total_assets || acc.total_asset || acc.initial_capital;
+            const navValue = latestNav?.nav || totalAssets / acc.initial_capital;
+            const profitPct = Math.round((navValue - 1.0) * 10000) / 100;
+            const status = acc.status || 'ACTIVE';
+
+            let statusBadge = (
+              <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-semibold border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                赛马运行中
+              </span>
+            );
+            if (status === 'PAUSED') {
+              statusBadge = (
+                <span className="inline-flex items-center gap-1 text-[11px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-semibold border border-amber-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                  已暂停
                 </span>
-                <span className="text-slate-400">
-                  {acc.nav_history?.length || 0} 跟踪日
+              );
+            } else if (status === 'ENDED') {
+              statusBadge = (
+                <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold border border-slate-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                  已归档
                 </span>
+              );
+            } else if (status === 'IDLE') {
+              statusBadge = (
+                <span className="inline-flex items-center gap-1 text-[11px] bg-slate-50 text-slate-500 px-2 py-0.5 rounded-full font-semibold border border-slate-200">
+                  未启动
+                </span>
+              );
+            }
+
+            return (
+              <div
+                key={acc.account_id}
+                onClick={() => handleSelectAccount(acc.account_id)}
+                className={`bg-white p-4 rounded-xl border transition-all cursor-pointer relative ${
+                  isSelected
+                    ? 'border-indigo-600 shadow-md ring-2 ring-indigo-500/15'
+                    : 'border-slate-200 hover:border-slate-300 hover:shadow-xs'
+                }`}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="font-bold text-xs text-slate-900 truncate max-w-[150px]">
+                    {acc.account_name}
+                  </div>
+                  {statusBadge}
+                </div>
+
+                <div className="flex items-baseline justify-between mb-1.5">
+                  <span className="text-xl font-extrabold text-slate-900">
+                    ¥{totalAssets.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                  <span
+                    className={`text-xs font-bold flex items-center ${
+                      profitPct >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                    }`}
+                  >
+                    {profitPct >= 0 ? <ArrowUpRight className="w-3.5 h-3.5 mr-0.5" /> : <ArrowDownRight className="w-3.5 h-3.5 mr-0.5" />}
+                    {profitPct >= 0 ? '+' : ''}
+                    {profitPct.toFixed(2)}%
+                  </span>
+                </div>
+
+                <div className="flex justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
+                  <span>
+                    当前净值: <b className="text-slate-800">{navValue.toFixed(4)}</b>
+                  </span>
+                  <span>
+                    现金: <b className="text-slate-800">¥{acc.available_cash.toLocaleString()}</b>
+                  </span>
+                </div>
+
+                <div className="mt-2 text-[10px] text-slate-500 truncate flex items-center justify-between">
+                  <span className="truncate">
+                    策略: <b className="text-indigo-600">{acc.associated_strategy}</b>
+                  </span>
+                  <span className="text-slate-400">
+                    {acc.nav_history?.length || 0} 跟踪日
+                  </span>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Selected Account Deep Dashboard */}
-      {curAcc && (
+      {curAcc && accounts.length > 0 && (
         <div className="space-y-4">
           {/* Action Control Bar (启动 / 暂停 / 结束 / 调仓 / 重置) */}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
