@@ -31,6 +31,7 @@ from agents.credit_analyst import CreditAnalystAgent
 from agents.equity_analyst import EquityAnalystAgent
 from agents.clause_analyst import ClauseAnalystAgent
 from agents.portfolio_manager import PortfolioManagerAgent
+from core.agent_chamber_manager import agent_chamber_manager
 
 import json
 from db import init_db, SessionLocal, BacktestRecord
@@ -511,7 +512,11 @@ def delete_paper_account(account_id: str):
 # 5. LangGraph 多智能体协同会诊 & WebSocket 流式事件
 # ==============================================================
 
-def resolve_screening_params(strategy_id: Optional[str] = None):
+def resolve_screening_params(strategy_id: Any = None):
+    if hasattr(strategy_id, "default"):
+        strategy_id = strategy_id.default
+    if strategy_id and not isinstance(strategy_id, str):
+        strategy_id = str(strategy_id)
     strat = None
     if strategy_id and strategy_id != "default":
         strat = strategy_manager.get_strategy(strategy_id)
@@ -597,6 +602,37 @@ def build_models_used(credit_agent, equity_agent, clause_agent):
         }
     }
 
+@app.get("/api/chambers")
+def get_chambers():
+    """获取所有可用议事空间 (投研圆桌 / 对抗法庭)"""
+    return agent_chamber_manager.get_all_chambers()
+
+@app.get("/api/chambers/{chamber_id}")
+def get_chamber_detail(chamber_id: str):
+    """获取指定议事空间详情"""
+    chamber = agent_chamber_manager.get_chamber_by_id(chamber_id)
+    if not chamber:
+        raise HTTPException(status_code=404, detail="议事空间不存在")
+    return chamber
+
+@app.get("/api/agents/talent_pool")
+def get_agent_talent_pool():
+    """获取投研人才库所有智能体列表"""
+    return agent_chamber_manager.get_all_agents()
+
+@app.post("/api/agents/custom")
+def save_custom_agent(agent_data: Dict[str, Any] = Body(...)):
+    """创建或更新自定义智能体"""
+    return agent_chamber_manager.save_agent(agent_data)
+
+@app.delete("/api/agents/custom/{agent_id}")
+def delete_custom_agent(agent_id: str):
+    """删除自定义智能体"""
+    success = agent_chamber_manager.delete_agent(agent_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="内置智能体席位不可删除或智能体不存在")
+    return {"success": True, "message": "删除成功"}
+
 @app.get("/api/agents/result")
 def get_agents_result():
     if "data" in AGENT_CACHE:
@@ -614,34 +650,43 @@ def get_agents_result():
     return {"has_run": False}
 
 @app.post("/api/agents/run")
-async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
+async def run_agents_pipeline(
+    strategy_id: Optional[str] = Query(None),
+    chamber_id: Optional[str] = Query("chamber_cb_roundtable")
+):
+    if hasattr(strategy_id, "default"):
+        strategy_id = strategy_id.default
+    if not isinstance(strategy_id, str):
+        strategy_id = None
+
     quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
     screener, strat_name, strat_cat, strat_params = resolve_screening_params(strategy_id)
-    
-    # 1. 初筛
     candidates = screener.screen(quotes_df)
     
-    # 2. 信用风控
-    credit_agent = CreditAnalystAgent()
-    credit_reviews = credit_agent.batch_evaluate(candidates)
-    
-    # 3. 正股动量
-    equity_agent = EquityAnalystAgent()
-    equity_reviews = equity_agent.batch_evaluate(candidates)
-    
-    # 4. 条款博弈
-    clause_agent = ClauseAnalystAgent()
-    clause_reviews = clause_agent.batch_evaluate(candidates)
-    
-    # 5. 投资总监 (PM)
-    pm_agent = PortfolioManagerAgent(top_n=15)
-    final_portfolio, vetoed_bonds, report_md = pm_agent.arbitrate_and_allocate(
-        candidates=candidates,
-        credit_reviews=credit_reviews,
-        equity_reviews=equity_reviews,
-        clause_reviews=clause_reviews
-    )
+    if hasattr(chamber_id, "default"):
+        chamber_id = chamber_id.default
+    if not chamber_id or not isinstance(chamber_id, str):
+        chamber_id = "chamber_cb_roundtable"
+        
+    chamber_info = agent_chamber_manager.get_chamber_by_id(chamber_id)
+    if not chamber_info:
+        chamber_info = {
+            "id": "chamber_cb_roundtable",
+            "name": "🏛️ 可转债多智能体投研圆桌",
+            "chamber_type": "ROUNDTABLE",
+            "target_asset": "cb",
+            "agent_ids": ["cb_credit", "cb_equity", "cb_clause"]
+        }
 
+    # 执行相应范式的会审 (圆桌 vs 法庭)
+    if chamber_info.get("chamber_type") == "COURTROOM":
+        chamber_result = agent_chamber_manager.run_courtroom_deliberation(candidates, chamber_info)
+    else:
+        chamber_result = agent_chamber_manager.run_roundtable_deliberation(candidates, chamber_info)
+
+    credit_agent = CreditAnalystAgent()
+    equity_agent = EquityAnalystAgent()
+    clause_agent = ClauseAnalystAgent()
     models_used = build_models_used(credit_agent, equity_agent, clause_agent)
     
     res = {
@@ -652,14 +697,19 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
         "strategy_category": strat_cat,
         "strategy_params": strat_params,
         "screened_count": len(candidates),
+        "chamber_id": chamber_info.get("id"),
+        "chamber_name": chamber_info.get("name"),
+        "chamber_type": chamber_info.get("chamber_type"),
         "models_used": models_used,
         "candidates": candidates,
-        "credit_reviews": credit_reviews,
-        "equity_reviews": equity_reviews,
-        "clause_reviews": clause_reviews,
-        "final_portfolio": final_portfolio,
-        "vetoed_bonds": vetoed_bonds,
-        "report_md": report_md
+        "credit_reviews": chamber_result.get("credit_reviews", {}),
+        "equity_reviews": chamber_result.get("equity_reviews", {}),
+        "clause_reviews": chamber_result.get("clause_reviews", {}),
+        "court_verdicts": chamber_result.get("court_verdicts", {}),
+        "all_bond_speeches": chamber_result.get("all_bond_speeches", {}),
+        "final_portfolio": chamber_result.get("final_portfolio", []),
+        "vetoed_bonds": chamber_result.get("vetoed_bonds", []),
+        "report_md": chamber_result.get("report_md", "")
     }
     AGENT_CACHE["data"] = res
 
@@ -674,9 +724,9 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
                 strategy_name=strat_name,
                 run_time=res["run_time"],
                 candidates_count=len(candidates),
-                vetoed_count=len(vetoed_bonds),
-                portfolio_count=len(final_portfolio),
-                report_md=report_md,
+                vetoed_count=len(res["vetoed_bonds"]),
+                portfolio_count=len(res["final_portfolio"]),
+                report_md=res["report_md"],
                 result_json=json.dumps(res, ensure_ascii=False)
             )
             session.add(rpt)
@@ -687,7 +737,7 @@ async def run_agents_pipeline(strategy_id: Optional[str] = Query(None)):
     # 自动广播推送飞书/微信
     try:
         from notification.notifier import Notifier
-        Notifier.notify_all(report_md)
+        Notifier.notify_all(res["report_md"])
     except Exception as e:
         print("Notification push error:", e)
 
@@ -708,13 +758,24 @@ def manual_notify():
 async def websocket_agents_stream(websocket: WebSocket):
     await websocket.accept()
     strategy_id = websocket.query_params.get("strategy_id")
+    chamber_id = websocket.query_params.get("chamber_id", "chamber_cb_roundtable")
     try:
         screener, strat_name, strat_cat, strat_params = resolve_screening_params(strategy_id)
+        chamber_info = agent_chamber_manager.get_chamber_by_id(chamber_id or "chamber_cb_roundtable")
+        if not chamber_info:
+            chamber_info = {
+                "id": "chamber_cb_roundtable",
+                "name": "🏛️ 可转债多智能体投研圆桌",
+                "chamber_type": "ROUNDTABLE",
+                "target_asset": "cb",
+                "agent_ids": ["cb_credit", "cb_equity", "cb_clause"]
+            }
+
         await websocket.send_json({
             "step": "init",
-            "message": f"正在连接 LangGraph 多智能体协同网络 · 挂载标的源：【{strat_name}】..."
+            "message": f"正在接入议事空间【{chamber_info['name']}】· 挂载标的源：【{strat_name}】..."
         })
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.4)
         
         quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
         await websocket.send_json({
@@ -726,67 +787,72 @@ async def websocket_agents_stream(websocket: WebSocket):
         await websocket.send_json({
             "step": "screening_done",
             "candidates_count": len(candidates),
-            "message": f"✅ [Node 1 完成] 依据策略【{strat_name}】锁定 {len(candidates)} 只优质候选品种送审投委会"
+            "message": f"✅ [Node 1 完成] 依据策略【{strat_name}】锁定 {len(candidates)} 只优质候选品种送审"
         })
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.4)
         
-        # 信用审查
+        if chamber_info.get("chamber_type") == "COURTROOM":
+            # 对抗法庭工作流
+            await websocket.send_json({
+                "step": "court_open",
+                "message": "⚖️ [多空对抗裁决法庭 · 开庭] 书记员宣布开庭，进入多空控辩交叉质询审理程序..."
+            })
+            await asyncio.sleep(0.5)
+
+            await websocket.send_json({
+                "step": "prosecution",
+                "message": "🔴 [控方第一回合] 激进空头公诉人出庭质询，呈递标的造假破绽与估值泡沫控诉证据..."
+            })
+            await asyncio.sleep(0.6)
+
+            await websocket.send_json({
+                "step": "defense",
+                "message": "🟢 [辩方第二回合] 价值多头辩护人举证抗辩，呈递反转催化剂、核心护城河与非对称赔率辩词..."
+            })
+            await asyncio.sleep(0.6)
+
+            await websocket.send_json({
+                "step": "judge",
+                "message": "⚖️ [合议庭终审裁决] 主审首席大法官兼听多空论证，敲槌宣读终审判决书与量刑仓位..."
+            })
+            chamber_result = agent_chamber_manager.run_courtroom_deliberation(candidates, chamber_info)
+            await asyncio.sleep(0.4)
+        else:
+            # 圆桌投研工作流
+            credit_agent = CreditAnalystAgent()
+            credit_label = f"{credit_agent.provider_name} · {credit_agent.model}" if credit_agent.client else "内置硬风控"
+            await websocket.send_json({
+                "step": "credit",
+                "message": f"🛡️ [Node 2: 首席风控官 · {credit_label}] 穿透审查大股东财务真实性与退市质押风险..."
+            })
+            await asyncio.sleep(0.4)
+            
+            equity_agent = EquityAnalystAgent()
+            equity_label = f"{equity_agent.provider_name} · {equity_agent.model}" if equity_agent.client else "量化动量算法"
+            await websocket.send_json({
+                "step": "equity",
+                "message": f"🚀 [Node 3: 正股动量 Agent · {equity_label}] 扫描正股题材风口与技术均线形态..."
+            })
+            await asyncio.sleep(0.4)
+            
+            clause_agent = ClauseAnalystAgent()
+            clause_label = f"{clause_agent.provider_name} · {clause_agent.model}" if clause_agent.client else "博弈赔率模型"
+            await websocket.send_json({
+                "step": "clause",
+                "message": f"♟️ [Node 4: 条款博弈 Agent · {clause_label}] 推演下修概率与强赎风险不对称赔率..."
+            })
+            await asyncio.sleep(0.4)
+            
+            await websocket.send_json({
+                "step": "pm",
+                "message": "👔 [Node 5: 投资总监 Agent · PM] 多空辩论仲裁汇总，生成最终组合配置与评级权重..."
+            })
+            chamber_result = agent_chamber_manager.run_roundtable_deliberation(candidates, chamber_info)
+            await asyncio.sleep(0.4)
+
         credit_agent = CreditAnalystAgent()
-        credit_label = f"{credit_agent.provider_name} · {credit_agent.model}" if credit_agent.client else "内置硬风控"
-        await websocket.send_json({
-            "step": "credit",
-            "message": f"🛡️ [Node 2: 首席风控官 · {credit_label}] 穿透审查大股东财务真实性与退市质押风险..."
-        })
-        credit_reviews = credit_agent.batch_evaluate(candidates)
-        veto_count = sum(1 for r in credit_reviews.values() if r["risk_level"] == "VETO")
-        await websocket.send_json({
-            "step": "credit_done",
-            "veto_count": veto_count,
-            "message": f"✅ [Node 2 完成] 信用审查完毕，{veto_count} 只高危标的触发一票否决"
-        })
-        await asyncio.sleep(0.5)
-        
-        # 动量评估
         equity_agent = EquityAnalystAgent()
-        equity_label = f"{equity_agent.provider_name} · {equity_agent.model}" if equity_agent.client else "量化动量算法"
-        await websocket.send_json({
-            "step": "equity",
-            "message": f"🚀 [Node 3: 正股动量 Agent · {equity_label}] 扫描正股题材风口与技术均线形态..."
-        })
-        equity_reviews = equity_agent.batch_evaluate(candidates)
-        await websocket.send_json({
-            "step": "equity_done",
-            "message": "✅ [Node 3 完成] 动量评分完成 (0~100 分)"
-        })
-        await asyncio.sleep(0.5)
-        
-        # 条款博弈
         clause_agent = ClauseAnalystAgent()
-        clause_label = f"{clause_agent.provider_name} · {clause_agent.model}" if clause_agent.client else "博弈赔率模型"
-        await websocket.send_json({
-            "step": "clause",
-            "message": f"♟️ [Node 4: 条款博弈 Agent · {clause_label}] 推演下修概率与强赎风险不对称赔率..."
-        })
-        clause_reviews = clause_agent.batch_evaluate(candidates)
-        await websocket.send_json({
-            "step": "clause_done",
-            "message": "✅ [Node 4 完成] 博弈赔率模型推演完成"
-        })
-        await asyncio.sleep(0.5)
-        
-        # PM 仲裁
-        await websocket.send_json({
-            "step": "pm",
-            "message": "👔 [Node 5: 投资总监 Agent · PM] 多空辩论仲裁汇总，生成最终组合配置与评级权重..."
-        })
-        pm_agent = PortfolioManagerAgent(top_n=15)
-        final_portfolio, vetoed_bonds, report_md = pm_agent.arbitrate_and_allocate(
-            candidates=candidates,
-            credit_reviews=credit_reviews,
-            equity_reviews=equity_reviews,
-            clause_reviews=clause_reviews
-        )
-        
         models_used = build_models_used(credit_agent, equity_agent, clause_agent)
 
         res = {
@@ -797,14 +863,19 @@ async def websocket_agents_stream(websocket: WebSocket):
             "strategy_category": strat_cat,
             "strategy_params": strat_params,
             "screened_count": len(candidates),
+            "chamber_id": chamber_info.get("id"),
+            "chamber_name": chamber_info.get("name"),
+            "chamber_type": chamber_info.get("chamber_type"),
             "models_used": models_used,
             "candidates": candidates,
-            "credit_reviews": credit_reviews,
-            "equity_reviews": equity_reviews,
-            "clause_reviews": clause_reviews,
-            "final_portfolio": final_portfolio,
-            "vetoed_bonds": vetoed_bonds,
-            "report_md": report_md
+            "credit_reviews": chamber_result.get("credit_reviews", {}),
+            "equity_reviews": chamber_result.get("equity_reviews", {}),
+            "clause_reviews": chamber_result.get("clause_reviews", {}),
+            "court_verdicts": chamber_result.get("court_verdicts", {}),
+            "all_bond_speeches": chamber_result.get("all_bond_speeches", {}),
+            "final_portfolio": chamber_result.get("final_portfolio", []),
+            "vetoed_bonds": chamber_result.get("vetoed_bonds", []),
+            "report_md": chamber_result.get("report_md", "")
         }
         AGENT_CACHE["data"] = res
 
@@ -819,9 +890,9 @@ async def websocket_agents_stream(websocket: WebSocket):
                     strategy_name=strat_name,
                     run_time=res["run_time"],
                     candidates_count=len(candidates),
-                    vetoed_count=len(vetoed_bonds),
-                    portfolio_count=len(final_portfolio),
-                    report_md=report_md,
+                    vetoed_count=len(res["vetoed_bonds"]),
+                    portfolio_count=len(res["final_portfolio"]),
+                    report_md=res["report_md"],
                     result_json=json.dumps(res, ensure_ascii=False)
                 )
                 session.add(rpt)
@@ -832,7 +903,7 @@ async def websocket_agents_stream(websocket: WebSocket):
         # 自动广播推送飞书/微信群
         try:
             from notification.notifier import Notifier
-            Notifier.notify_all(report_md)
+            Notifier.notify_all(res["report_md"])
         except Exception:
             pass
         

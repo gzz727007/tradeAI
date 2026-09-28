@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { AgentResult, CandidateBond, Strategy } from '../types';
+import { AgentResult, CandidateBond, Strategy, MeetingChamber, AgentSpeech } from '../types';
 import { api } from '../api/client';
+import { AgentStudioModal } from './AgentStudioModal';
 import {
   Bot,
   Play,
@@ -17,7 +18,16 @@ import {
   Filter,
   SlidersHorizontal,
   Sparkles,
-  Layers
+  Layers,
+  Scale,
+  Gavel,
+  Settings,
+  Quote,
+  ChevronRight,
+  Eye,
+  FileCheck2,
+  TrendingDown,
+  TrendingUp
 } from 'lucide-react';
 
 interface AgentConsultationProps {
@@ -36,6 +46,11 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   const [streamSteps, setStreamSteps] = useState<Array<{ step: string; message: string }>>([]);
   const [selectedBondCode, setSelectedBondCode] = useState<string>('');
   const [llmConfig, setLlmConfig] = useState<any>(null);
+
+  const [chambersList, setChambersList] = useState<MeetingChamber[]>([]);
+  const [currentChamberId, setCurrentChamberId] = useState<string>('chamber_cb_roundtable');
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [expandedEvidence, setExpandedEvidence] = useState<Record<string, boolean>>({});
 
   const [strategiesList, setStrategiesList] = useState<Strategy[]>(strategies);
   const [currentStrategyId, setCurrentStrategyId] = useState<string>(selectedStrategyId || 'default');
@@ -58,11 +73,28 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
 
   const activeStrategy = strategiesList.find((s) => s.id === currentStrategyId);
 
+  const loadChambers = async () => {
+    try {
+      const data = await api.getChambers();
+      if (Array.isArray(data)) {
+        setChambersList(data);
+        if (data.length > 0 && !currentChamberId) {
+          setCurrentChamberId(data[0].id);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load chambers', e);
+    }
+  };
+
   const loadCachedResult = async () => {
     try {
       const data = await api.getAgentResult();
       if (data.has_run) {
         setResult(data);
+        if (data.chamber_id) {
+          setCurrentChamberId(data.chamber_id);
+        }
         if (data.final_portfolio && data.final_portfolio.length > 0) {
           setSelectedBondCode(data.final_portfolio[0].bond_code);
         }
@@ -77,6 +109,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
 
   useEffect(() => {
     loadCachedResult();
+    loadChambers();
     api.getLLMConfig().then((data) => setLlmConfig(data)).catch(() => {});
   }, []);
 
@@ -84,11 +117,16 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
     setLoading(true);
     setStreamSteps([]);
 
-    // Open WebSocket with strategy_id
+    // Open WebSocket with strategy_id and chamber_id
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const query = currentStrategyId && currentStrategyId !== 'default'
-      ? `?strategy_id=${encodeURIComponent(currentStrategyId)}`
-      : '';
+    const params = new URLSearchParams();
+    if (currentStrategyId && currentStrategyId !== 'default') {
+      params.append('strategy_id', currentStrategyId);
+    }
+    if (currentChamberId) {
+      params.append('chamber_id', currentChamberId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
     const wsUrl = `${protocol}//${window.location.host}/ws/agents/stream${query}`;
     const ws = new WebSocket(wsUrl);
 
@@ -115,7 +153,10 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
     ws.onerror = (err) => {
       console.error('WebSocket error, falling back to HTTP', err);
       // Fallback to HTTP
-      api.runAgents(currentStrategyId && currentStrategyId !== 'default' ? currentStrategyId : undefined)
+      api.runAgents(
+        currentStrategyId && currentStrategyId !== 'default' ? currentStrategyId : undefined,
+        currentChamberId
+      )
         .then((data) => {
           setResult(data);
           if (data.final_portfolio?.length > 0) {
@@ -155,53 +196,116 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
   const activeModelName = activeProviderInfo?.model || '已就绪模型';
   const activeProviderName = activeProviderInfo?.name || '大模型';
 
+  const activeChamber = chambersList.find((c) => c.id === currentChamberId) || chambersList[0];
+  const isCourtroomMode = activeChamber?.chamber_type === 'COURTROOM';
+
   return (
     <div className="space-y-4">
       {/* Strategy-Driven Controller Bar */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3.5">
+      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
+        {/* Top Header & Run Button */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-linear-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-xs">
-                <Bot className="w-4 h-4" />
+              <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center shadow-xs ${
+                isCourtroomMode ? 'bg-linear-to-tr from-amber-600 to-rose-600' : 'bg-linear-to-tr from-blue-600 to-indigo-600'
+              }`}>
+                {isCourtroomMode ? <Scale className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                  <span>今日 AI 智能体投研会诊室</span>
-                  <span className="text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200 px-2 py-0.5 rounded-full">
-                    Quantamental 量化前置初筛 + 多智能体博弈
+                  <span>{activeChamber?.name || 'AI 智能体投研会诊室'}</span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                    isCourtroomMode ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-purple-50 text-purple-700 border-purple-200'
+                  }`}>
+                    {isCourtroomMode ? '⚖️ 3 轮多空指控抗辩 + 首席法官裁决' : '🏛️ Quantamental 量化初筛 + 专家圆桌'}
                   </span>
                 </h3>
                 {llmConfig?.is_ready && (
                   <span className="inline-flex items-center gap-1.5 text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-0.5 rounded-full shadow-2xs">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span>算力引擎: <b>{activeProviderName}</b> · <code className="bg-white/80 px-1 py-0.2 rounded text-[9px] text-emerald-800">{activeModelName}</code> (全自适应弹性调度)</span>
+                    <span>算力引擎: <b>{activeProviderName}</b> · <code className="bg-white/80 px-1 py-0.2 rounded text-[9px] text-emerald-800">{activeModelName}</code></span>
                   </span>
                 )}
               </div>
             </div>
-            <p className="text-xs text-slate-500">
-              由前置量化策略从 500+ 只转债中粗筛标的，再交由 <b className="text-slate-700">信用风控官</b>、<b className="text-slate-700">正股动量官</b>、<b className="text-slate-700">条款博弈专家</b> 进行穿透审核（统一由当前配置的 <b className="text-slate-700">{activeModelName}</b> 自适应推理驱动），最后由 <b className="text-slate-700">PM投资总监</b> 一票否决并生成最优组合配置。
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {activeChamber?.description || '前置量化策略筛选标的，多智能体协同研判生成最优组合。'}
             </p>
           </div>
 
-          <button
-            onClick={handleStartConsultation}
-            disabled={loading}
-            className="flex items-center gap-2 bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-sm hover:shadow transition-all cursor-pointer disabled:opacity-50 shrink-0"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>投委会多智能体协同会诊中...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 fill-current" />
-                <span>召开今日投委会实时会诊</span>
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setStudioOpen(true)}
+              className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold px-3 py-2.5 rounded-xl shadow-2xs transition-all cursor-pointer"
+              title="配置与扩展自定义智能体人才库"
+            >
+              <Settings className="w-3.5 h-3.5 text-slate-500" />
+              <span>⚙️ 智能体工坊</span>
+            </button>
+
+            <button
+              onClick={handleStartConsultation}
+              disabled={loading}
+              className={`flex items-center gap-2 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-sm hover:shadow transition-all cursor-pointer disabled:opacity-50 shrink-0 ${
+                isCourtroomMode
+                  ? 'bg-linear-to-r from-amber-600 via-rose-600 to-amber-700 hover:from-amber-700 hover:to-rose-700'
+                  : 'bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700'
+              }`}
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>{isCourtroomMode ? '多空法庭激烈合议审理中...' : '投委会多智能体协同会诊中...'}</span>
+                </>
+              ) : (
+                <>
+                  {isCourtroomMode ? <Gavel className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                  <span>{isCourtroomMode ? '敲槌！开启金融多空法庭裁决' : '召开今日投委会实时会诊'}</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Chamber Selection Pills */}
+        <div className="pt-2 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0">
+            <span className="text-xs font-bold text-slate-700 flex items-center gap-1 shrink-0 mr-1">
+              <Layers className="w-3.5 h-3.5 text-indigo-600" />
+              <span>选择会场：</span>
+            </span>
+            {chambersList.map((ch) => {
+              const isActive = currentChamberId === ch.id;
+              const isCourt = ch.chamber_type === 'COURTROOM';
+              return (
+                <button
+                  key={ch.id}
+                  onClick={() => setCurrentChamberId(ch.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border shrink-0 ${
+                    isActive
+                      ? isCourt
+                        ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                        : 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {isCourt ? <Scale className="w-3.5 h-3.5" /> : <MessageSquare className="w-3.5 h-3.5" />}
+                  <span>{ch.name}</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-normal ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    {ch.agent_ids?.length || 0}智能体
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+            <Info className="w-3.5 h-3.5 text-slate-400" />
+            <span>每个智能体的独立发言与举证链均被逐字存证，支持穿透审计。</span>
+          </div>
         </div>
 
         {/* Strategy Selector Line */}
@@ -402,28 +506,37 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
             </div>
           )}
 
-          {/* Multi-Agent Roundtable Interactive Chat Room */}
+          {/* Multi-Agent Deliberation & Verbatim Speech Transcript Room */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-4 space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-blue-600" />
+                {result.chamber_type === 'COURTROOM' ? (
+                  <Scale className="w-4 h-4 text-amber-600" />
+                ) : (
+                  <MessageSquare className="w-4 h-4 text-blue-600" />
+                )}
                 <h4 className="font-bold text-xs text-slate-800">
-                  🎙️ 智能体圆桌会诊室 (选择标的查看 4 大专家深度研判与辩论实录)
+                  {result.chamber_type === 'COURTROOM'
+                    ? '⚖️ 金融多空裁决法庭 · 控辩合议实录与裁定书'
+                    : '🎙️ 智能体圆桌会诊室 · 深度研判与辩论发言实录'}
                 </h4>
               </div>
 
               {/* Bond Selector */}
-              <select
-                value={selectedBondCode}
-                onChange={(e) => setSelectedBondCode(e.target.value)}
-                className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 font-semibold text-slate-800 focus:outline-hidden"
-              >
-                {result.final_portfolio.map((p) => (
-                  <option key={p.bond_code} value={p.bond_code}>
-                    {p.bond_name} ({p.bond_code})
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">核查标的:</span>
+                <select
+                  value={selectedBondCode}
+                  onChange={(e) => setSelectedBondCode(e.target.value)}
+                  className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 font-semibold text-slate-800 focus:outline-hidden"
+                >
+                  {result.final_portfolio.map((p) => (
+                    <option key={p.bond_code} value={p.bond_code}>
+                      {p.bond_name} ({p.bond_code})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {selectedCand && (
@@ -447,80 +560,243 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
               </div>
             )}
 
-            {/* Chat Transcript Bubbles: 2x2 grid on wide screens */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-1">
-              {/* Agent 1: Credit Risk */}
-              <div className="flex gap-3 items-start bg-slate-50/70 p-3 rounded-xl border border-slate-200">
-                <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-xs">
-                  🛡️
-                </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>{result.models_used?.credit?.label || `首席风控官 · ${llmConfig?.is_ready ? activeModelName : '风控排雷'}`}</span>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-semibold">
-                      结论: {creditRev?.risk_level || 'PASS'}
-                    </span>
+            {/* Courtroom Verdict Banner (If in Courtroom Mode) */}
+            {result.chamber_type === 'COURTROOM' && result.court_verdicts?.[selectedBondCode] && (
+              <div className={`p-4 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-xs ${
+                result.court_verdicts[selectedBondCode].verdict === 'ACQUIT_BUY'
+                  ? 'bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50/80 border-emerald-300 text-emerald-950'
+                  : result.court_verdicts[selectedBondCode].verdict === 'REJECT'
+                  ? 'bg-gradient-to-r from-rose-50 via-red-50 to-rose-50/80 border-rose-300 text-rose-950'
+                  : 'bg-gradient-to-r from-amber-50 via-yellow-50 to-amber-50/80 border-amber-300 text-amber-950'
+              }`}>
+                <div className="flex items-start md:items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0 shadow-2xs border ${
+                    result.court_verdicts[selectedBondCode].verdict === 'ACQUIT_BUY'
+                      ? 'bg-emerald-100/90 border-emerald-300 text-emerald-700'
+                      : result.court_verdicts[selectedBondCode].verdict === 'REJECT'
+                      ? 'bg-rose-100/90 border-rose-300 text-rose-700'
+                      : 'bg-amber-100/90 border-amber-300 text-amber-700'
+                  }`}>
+                    {result.court_verdicts[selectedBondCode].verdict === 'ACQUIT_BUY' ? '⚖️' : result.court_verdicts[selectedBondCode].verdict === 'REJECT' ? '🚫' : '⚠️'}
                   </div>
-                  <p className="text-slate-600 leading-relaxed">
-                    {creditRev?.reason || '基本面穿透审查通过：正股财务稳健，无退市或恶性质押风险。'}
-                  </p>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-xs">
+                        【首席大法官合议庭终审裁决】
+                      </span>
+                      <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold shadow-2xs border ${
+                        result.court_verdicts[selectedBondCode].verdict === 'ACQUIT_BUY'
+                          ? 'bg-emerald-600 text-white border-emerald-700'
+                          : result.court_verdicts[selectedBondCode].verdict === 'REJECT'
+                          ? 'bg-rose-600 text-white border-rose-700'
+                          : 'bg-amber-500 text-white border-amber-600'
+                      }`}>
+                        {result.court_verdicts[selectedBondCode].verdict === 'ACQUIT_BUY' ? '✅ 无罪抗辩成立 · 准予建仓'
+                          : result.court_verdicts[selectedBondCode].verdict === 'REJECT' ? '❌ 驳回采纳 · 裁定排除'
+                          : '⏳ 事实不清 · 存疑观望'}
+                      </span>
+                      <span className="text-amber-500 text-xs">
+                        {Array(result.court_verdicts[selectedBondCode].rating_stars || 4).fill('⭐').join('')}
+                      </span>
+                    </div>
+                    <p className="text-xs leading-relaxed opacity-90 font-medium">
+                      {result.court_verdicts[selectedBondCode].sentence_summary}
+                    </p>
+                  </div>
                 </div>
-              </div>
 
-              {/* Agent 2: Equity Momentum */}
-              <div className="flex gap-3 items-start bg-blue-50/40 p-3 rounded-xl border border-blue-100">
-                <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center shrink-0 font-bold text-xs">
-                  🚀
-                </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>{result.models_used?.equity?.label || `正股动量分析师 · ${llmConfig?.is_ready ? activeModelName : '弹性算法'}`}</span>
-                    <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-semibold">
-                      弹性评分: {equityRev?.momentum_score || 75}/100
-                    </span>
+                <div className="bg-white/80 border border-slate-200/80 rounded-lg px-4 py-2 text-right shrink-0 shadow-2xs">
+                  <div className="text-[10px] text-slate-500 font-medium">法庭裁定建议权重</div>
+                  <div className="text-base font-black text-slate-900">
+                    {((result.court_verdicts[selectedBondCode].weight ?? 0.08) * 100).toFixed(1)}%
                   </div>
-                  <p className="text-slate-600 leading-relaxed">
-                    {equityRev?.catalyst_summary || '正股均线多头排列，所属题材具备良好资金进攻弹性。'}
-                  </p>
                 </div>
               </div>
+            )}
 
-              {/* Agent 3: Clause Game */}
-              <div className="flex gap-3 items-start bg-purple-50/40 p-3 rounded-xl border border-purple-100">
-                <div className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0 font-bold text-xs">
-                  ♟️
+            {/* Speeches Transcript Stream */}
+            {result.all_bond_speeches && result.all_bond_speeches[selectedBondCode]?.length > 0 ? (
+              <div className="space-y-3 pt-1">
+                <div className="flex items-center justify-between text-xs text-slate-500 px-1 border-b border-slate-100 pb-2">
+                  <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
+                    <span>智能体辩论与研判发言实录 (共 {result.all_bond_speeches[selectedBondCode].length} 轮发言)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    逐字记录每位智能体的发言与论据事实，供穿透复核与归因审查
+                  </span>
                 </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>{result.models_used?.clause?.label || `条款博弈专家 · ${llmConfig?.is_ready ? activeModelName : '博弈推演'}`}</span>
-                    <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-semibold">
-                      强赎风险: {clauseRev?.call_risk_level || 'LOW'}
-                    </span>
-                  </div>
-                  <p className="text-slate-600 leading-relaxed">
-                    {clauseRev?.game_summary || '大股东转股诉求明确，具备下修博弈的安全边际与不对称高胜率。'}
-                  </p>
-                </div>
-              </div>
 
-              {/* Agent 4: PM Director */}
-              <div className="flex gap-3 items-start bg-amber-50/50 p-3 rounded-xl border border-amber-200">
-                <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 font-bold text-xs">
-                  👔
-                </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-bold text-slate-900 flex items-center gap-2">
-                    <span>{result.models_used?.pm?.label || '投资总监 (PM) · 最终裁决'}</span>
-                    <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-semibold">
-                      建议配置: {selectedPortfolioItem ? Math.round(selectedPortfolioItem.weight * 1000) / 10 : 6.7}%
-                    </span>
-                  </div>
-                  <p className="text-slate-700 font-medium leading-relaxed">
-                    {selectedPortfolioItem?.pm_verdict || '安全垫与弹性共振，推荐纳入今日组合底仓配置！'}
-                  </p>
+                <div className="space-y-3">
+                  {result.all_bond_speeches[selectedBondCode].map((sp: AgentSpeech, idx: number) => {
+                    const isBear = sp.stance === 'BEAR';
+                    const isBull = sp.stance === 'BULL';
+                    const isVeto = sp.stance === 'VETO';
+                    const isJudge = sp.stance === 'JUDGEMENT';
+
+                    const cardBg = isBear
+                      ? 'bg-rose-50/20 border-rose-200'
+                      : isBull
+                      ? 'bg-emerald-50/20 border-emerald-200'
+                      : isVeto
+                      ? 'bg-red-50/30 border-red-300'
+                      : isJudge
+                      ? 'bg-indigo-50/20 border-indigo-200'
+                      : 'bg-slate-50/40 border-slate-200';
+
+                    const badgeStyle = isBear
+                      ? 'bg-rose-100 text-rose-800 border-rose-200'
+                      : isBull
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                      : isVeto
+                      ? 'bg-red-100 text-red-900 border-red-300'
+                      : isJudge
+                      ? 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                      : 'bg-slate-100 text-slate-700 border-slate-200';
+
+                    const stanceTitle = isBear ? '🐻 做空公诉 / 质询'
+                      : isBull ? '🐂 多头抗辩 / 举证'
+                      : isVeto ? '🚫 信用一票否决'
+                      : isJudge ? '⚖️ 大法官裁定'
+                      : '🔍 研判发言';
+
+                    return (
+                      <div key={sp.speech_id || idx} className={`p-4 rounded-xl border ${cardBg} shadow-2xs space-y-2.5 transition-all`}>
+                        {/* Header */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-full bg-white shadow-2xs border border-slate-200 flex items-center justify-center text-base shrink-0">
+                              {sp.avatar || '🤖'}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-xs text-slate-900">{sp.speaker_name}</span>
+                              <span className={`text-[10px] font-semibold px-2 py-0.2 rounded-full border ${badgeStyle}`}>
+                                {stanceTitle}
+                              </span>
+                              {sp.speaker_role && (
+                                <span className="text-[10px] text-slate-500 bg-white/80 px-2 py-0.2 rounded border border-slate-200 font-mono">
+                                  {sp.speaker_role}
+                                </span>
+                              )}
+                              {sp.vote_score != null && (
+                                <span className="text-[10px] text-indigo-700 font-semibold bg-indigo-50 px-2 py-0.2 rounded border border-indigo-200">
+                                  打分: {sp.vote_score}分
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                            {sp.model_used && (
+                              <span className="bg-white/80 border border-slate-200 px-2 py-0.5 rounded text-slate-600 font-mono">
+                                {sp.model_used}
+                              </span>
+                            )}
+                            <span>{sp.timestamp}</span>
+                          </div>
+                        </div>
+
+                        {/* Verbatim Statement */}
+                        <div className="relative pl-3.5 border-l-2 border-slate-300 text-xs text-slate-700 leading-relaxed font-normal bg-white/70 p-3 rounded-r-lg shadow-2xs">
+                          <Quote className="w-3.5 h-3.5 text-slate-300 absolute -top-1 -left-2" />
+                          <p className="whitespace-pre-wrap">{sp.statement}</p>
+                        </div>
+
+                        {/* Key Evidence Chain */}
+                        {sp.key_evidence && sp.key_evidence.length > 0 && (
+                          <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                            <span className="text-[10px] font-semibold text-slate-500 flex items-center gap-1 shrink-0">
+                              <Eye className="w-3 h-3 text-slate-400" />
+                              论据支撑事实:
+                            </span>
+                            {sp.key_evidence.map((ev, i) => (
+                              <span key={i} className="text-[10px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md shadow-2xs">
+                                {ev}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            </div>
+            ) : (
+              /* Fallback to Classic 2x2 grid if speeches are not recorded */
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-1">
+                {/* Agent 1: Credit Risk */}
+                <div className="flex gap-3 items-start bg-slate-50/70 p-3 rounded-xl border border-slate-200">
+                  <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-xs">
+                    🛡️
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div className="font-bold text-slate-900 flex items-center gap-2">
+                      <span>{result.models_used?.credit?.label || `首席风控官 · ${llmConfig?.is_ready ? activeModelName : '风控排雷'}`}</span>
+                      <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-semibold">
+                        结论: {creditRev?.risk_level || 'PASS'}
+                      </span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed">
+                      {creditRev?.reason || '基本面穿透审查通过：正股财务稳健，无退市或恶性质押风险。'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Agent 2: Equity Momentum */}
+                <div className="flex gap-3 items-start bg-blue-50/40 p-3 rounded-xl border border-blue-100">
+                  <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center shrink-0 font-bold text-xs">
+                    🚀
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div className="font-bold text-slate-900 flex items-center gap-2">
+                      <span>{result.models_used?.equity?.label || `正股动量分析师 · ${llmConfig?.is_ready ? activeModelName : '弹性算法'}`}</span>
+                      <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-semibold">
+                        弹性评分: {equityRev?.momentum_score || 75}/100
+                      </span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed">
+                      {equityRev?.catalyst_summary || '正股均线多头排列，所属题材具备良好资金进攻弹性。'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Agent 3: Clause Game */}
+                <div className="flex gap-3 items-start bg-purple-50/40 p-3 rounded-xl border border-purple-100">
+                  <div className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center shrink-0 font-bold text-xs">
+                    ♟️
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div className="font-bold text-slate-900 flex items-center gap-2">
+                      <span>{result.models_used?.clause?.label || `条款博弈专家 · ${llmConfig?.is_ready ? activeModelName : '博弈推演'}`}</span>
+                      <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-semibold">
+                        强赎风险: {clauseRev?.call_risk_level || 'LOW'}
+                      </span>
+                    </div>
+                    <p className="text-slate-600 leading-relaxed">
+                      {clauseRev?.game_summary || '大股东转股诉求明确，具备下修博弈的安全边际与不对称高胜率。'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Agent 4: PM Director */}
+                <div className="flex gap-3 items-start bg-amber-50/50 p-3 rounded-xl border border-amber-200">
+                  <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 font-bold text-xs">
+                    👔
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div className="font-bold text-slate-900 flex items-center gap-2">
+                      <span>{result.models_used?.pm?.label || '投资总监 (PM) · 最终裁决'}</span>
+                      <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-semibold">
+                        建议配置: {selectedPortfolioItem ? Math.round(selectedPortfolioItem.weight * 1000) / 10 : 6.7}%
+                      </span>
+                    </div>
+                    <p className="text-slate-700 font-medium leading-relaxed">
+                      {selectedPortfolioItem?.pm_verdict || '安全垫与弹性共振，推荐纳入今日组合底仓配置！'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -531,7 +807,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
           <Bot className="w-12 h-12 text-blue-500 mx-auto mb-3 opacity-80" />
           <h4 className="font-bold text-sm text-slate-800 mb-1">今日尚未启动多智能体联合会诊</h4>
           <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-            点击上方【🚀 启动多智能体联合会诊】按钮，系统将调度 4 大 AI 专家并行执行量化初筛、信用穿透审查、动量题材评分与条款博弈推演。
+            点击上方【🚀 启动多智能体联合会诊】或【⚖️ 敲槌开启法庭裁决】按钮，系统将调度前沿 AI 专家并行执行量化初筛、信用穿透审查、动量题材评分与深度辩论。
           </p>
           <button
             onClick={handleStartConsultation}
@@ -542,6 +818,13 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
           </button>
         </div>
       )}
+
+      {/* Agent Studio Modal */}
+      <AgentStudioModal
+        isOpen={studioOpen}
+        onClose={() => setStudioOpen(false)}
+        onAgentsChanged={loadChambers}
+      />
     </div>
   );
 };

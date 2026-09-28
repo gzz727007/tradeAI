@@ -144,6 +144,51 @@ export interface AgentModelMeta {
   label: string;
 }
 
+export interface AgentSpeech {
+  speech_id?: string;
+  speaker_id: string;
+  speaker_name: string;
+  avatar: string;
+  role_type?: string;
+  speaker_role?: string;
+  model_used: string;
+  stance: string; // BULL / BEAR / VETO / PASS / JUDGEMENT
+  score?: number;
+  vote_score?: number;
+  verdict?: string; // REJECT / WATCH / ACQUIT_BUY
+  statement: string; // 智能体发言实录全文
+  key_evidence: string[]; // 核心依据清单
+  timestamp: string;
+}
+
+export interface MeetingChamber {
+  id: string;
+  name: string;
+  chamber_type: 'ROUNDTABLE' | 'COURTROOM';
+  target_asset: string;
+  description: string;
+  icon: string;
+  agent_ids: string[];
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  avatar: string;
+  target_asset: string;
+  role_type: string;
+  description: string;
+  model_provider: string;
+  model_name: string;
+  system_prompt: string;
+  user_prompt_template: string;
+  is_builtin: boolean;
+  is_active: boolean;
+  sort_order: number;
+}
+
 export interface AgentResult {
   has_run: boolean;
   run_time?: string;
@@ -152,6 +197,9 @@ export interface AgentResult {
   strategy_category?: string;
   strategy_params?: any;
   screened_count?: number;
+  chamber_id?: string;
+  chamber_name?: string;
+  chamber_type?: 'ROUNDTABLE' | 'COURTROOM';
   models_used?: {
     active_provider?: string;
     credit?: AgentModelMeta;
@@ -163,6 +211,16 @@ export interface AgentResult {
   credit_reviews: Record<string, { risk_level: string; reason: string }>;
   equity_reviews: Record<string, { momentum_score: number; sector_themes: string[]; catalyst_summary: string }>;
   clause_reviews: Record<string, { call_risk_level: string; game_summary: string }>;
+  court_verdicts?: Record<string, {
+    verdict: string;
+    verdict_label?: string;
+    sentence_summary?: string;
+    weight: number;
+    suggested_weight?: number;
+    rating_stars: number;
+    severity_stars?: number;
+  }>;
+  all_bond_speeches?: Record<string, AgentSpeech[]>;
   final_portfolio: Array<{
     bond_code: string;
     bond_name: string;

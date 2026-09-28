@@ -4,7 +4,7 @@ TradeAI 统一数据库模块 (SQLAlchemy 关系型事务引擎)
 """
 
 from db.session import Base, engine, SessionLocal, get_db, get_db_context
-from db.models import Strategy, BacktestRecord, Account, Position, TradeOrder, AgentReportRecord
+from db.models import Strategy, BacktestRecord, Account, Position, TradeOrder, AgentReportRecord, AgentDefinition, MeetingChamber
 from db.init_db import init_db
 
 __all__ = [
@@ -19,5 +19,7 @@ __all__ = [
     "Position",
     "TradeOrder",
     "AgentReportRecord",
+    "AgentDefinition",
+    "MeetingChamber",
     "init_db",
 ]

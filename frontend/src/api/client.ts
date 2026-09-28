@@ -249,11 +249,12 @@ export const api = {
     return res.json();
   },
 
-  runAgents: async (strategyId?: string): Promise<AgentResult> => {
-    const url = strategyId && strategyId !== 'default'
-      ? `${API_BASE}/agents/run?strategy_id=${encodeURIComponent(strategyId)}`
-      : `${API_BASE}/agents/run`;
-    const res = await fetch(url, { method: 'POST' });
+  runAgents: async (strategyId?: string, chamberId?: string): Promise<AgentResult> => {
+    const params = new URLSearchParams();
+    if (strategyId && strategyId !== 'default') params.append('strategy_id', strategyId);
+    if (chamberId) params.append('chamber_id', chamberId);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`${API_BASE}/agents/run${qs}`, { method: 'POST' });
     return res.json();
   },
 
@@ -323,6 +324,41 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+    return res.json();
+  },
+
+  // 议事空间与法庭 (Chambers & Multi-Agent Deliberation)
+  getChambers: async () => {
+    const res = await fetch(`${API_BASE}/chambers`);
+    return res.json();
+  },
+
+  getAgentTalentPool: async () => {
+    const res = await fetch(`${API_BASE}/agents/talent_pool`);
+    return res.json();
+  },
+
+  saveCustomAgent: async (agentData: any) => {
+    const res = await fetch(`${API_BASE}/agents/custom`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(agentData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '保存智能体失败');
+    }
+    return res.json();
+  },
+
+  deleteCustomAgent: async (agentId: string) => {
+    const res = await fetch(`${API_BASE}/agents/custom/${agentId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '删除智能体失败');
+    }
     return res.json();
   },
 };

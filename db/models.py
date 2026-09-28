@@ -13,7 +13,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    UniqueConstraint
+    UniqueConstraint,
+    Boolean
 )
 from sqlalchemy.orm import relationship
 from db.session import Base
@@ -256,4 +257,84 @@ class AgentReportRecord(Base):
             except Exception:
                 res = {}
         return res
+
+
+class AgentDefinition(Base):
+    """投研智能体人才库表 (Agent Definition)"""
+    __tablename__ = "agents"
+
+    id = Column(String(64), primary_key=True, index=True, comment="智能体唯一代号 (如 bear_prosecutor)")
+    name = Column(String(128), nullable=False, comment="智能体角色名称")
+    avatar = Column(String(32), default="🤖", comment="头像或Emoji")
+    target_asset = Column(String(32), default="universal", comment="适用资产: cb/stock/us_stock/universal")
+    role_type = Column(String(32), default="score", comment="职责类型: veto(风控否决)/score(弹性评分)/review(条款研判)/prosecutor(控方)/defender(辩方)/judge(法官裁决)")
+    description = Column(Text, nullable=True, comment="职责描述与投资哲学定位")
+    model_provider = Column(String(32), default="auto", comment="首选大模型渠道: auto/gemini/deepseek/qwen/openai")
+    model_name = Column(String(64), nullable=True, comment="指定的模型名称(为空则使用默认)")
+    system_prompt = Column(Text, nullable=False, comment="专家人设与推演准则 System Prompt")
+    user_prompt_template = Column(Text, nullable=False, comment="标的评估 Prompt 模板(支持插值)")
+    is_builtin = Column(Boolean, default=False, comment="是否系统内置不可删除")
+    is_active = Column(Boolean, default=True, comment="是否启用")
+    sort_order = Column(Integer, default=0, comment="展示与执行排序")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "avatar": self.avatar or "🤖",
+            "target_asset": self.target_asset or "universal",
+            "role_type": self.role_type or "score",
+            "description": self.description or "",
+            "model_provider": self.model_provider or "auto",
+            "model_name": self.model_name or "",
+            "system_prompt": self.system_prompt or "",
+            "user_prompt_template": self.user_prompt_template or "",
+            "is_builtin": bool(self.is_builtin),
+            "is_active": bool(self.is_active),
+            "sort_order": self.sort_order or 0,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else "",
+            "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M:%S") if self.updated_at else ""
+        }
+
+
+class MeetingChamber(Base):
+    """议事空间与法庭类型表 (Meeting Chambers & Assemblies)"""
+    __tablename__ = "meeting_chambers"
+
+    id = Column(String(64), primary_key=True, index=True, comment="议事厅代号 (如 chamber_adversarial_court)")
+    name = Column(String(128), nullable=False, comment="议事厅名称")
+    chamber_type = Column(String(32), default="ROUNDTABLE", comment="议事范式: ROUNDTABLE(投研圆桌) / COURTROOM(对抗法庭)")
+    target_asset = Column(String(32), default="cb", comment="资产分类: cb/stock/us_stock/universal")
+    description = Column(Text, nullable=True, comment="议事厅审理目标与议程说明")
+    icon = Column(String(32), default="🏛️", comment="议事厅图标")
+    agent_ids_json = Column(Text, default="[]", comment="挂载参会的智能体ID列表JSON")
+    is_active = Column(Boolean, default=True, comment="是否启用")
+    sort_order = Column(Integer, default=0, comment="展示排序")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    def to_dict(self):
+        import json
+        agent_ids = []
+        if self.agent_ids_json:
+            try:
+                agent_ids = json.loads(self.agent_ids_json)
+            except Exception:
+                agent_ids = []
+        return {
+            "id": self.id,
+            "name": self.name,
+            "chamber_type": self.chamber_type,
+            "target_asset": self.target_asset,
+            "description": self.description or "",
+            "icon": self.icon or "🏛️",
+            "agent_ids": agent_ids,
+            "is_active": bool(self.is_active),
+            "sort_order": self.sort_order or 0,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else "",
+            "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M:%S") if self.updated_at else ""
+        }
+
 
