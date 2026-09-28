@@ -99,6 +99,8 @@ class AgentChamberManager:
                 return True
         return False
 
+    _failed_providers = set()
+
     # ==============================================================
     # 2. 智能体发言与证据链生成 (LLM + 规则引擎)
     # ==============================================================
@@ -116,7 +118,11 @@ class AgentChamberManager:
         model_to_use = agent_info.get("model_name") if agent_info.get("model_name") else fallback_model
 
         if not client or not model_to_use:
-            return None, "规则引擎 (Offline)"
+            return None, "内置规则引擎 (Offline)"
+
+        # 若此前已检测到该供应商 API Key 无效，则直接走内置规则引擎，避免重复报错刷屏
+        if provider_key in cls._failed_providers:
+            return None, "量化金融规则引擎 (Key未生效)"
 
         try:
             resp = client.chat.completions.create(
@@ -127,12 +133,18 @@ class AgentChamberManager:
                 ],
                 temperature=0.2,
                 max_tokens=600,
-                timeout=25.0
+                timeout=20.0
             )
             return resp.choices[0].message.content.strip(), f"{provider_name} · {model_to_use}"
         except Exception as e:
-            print(f"[WARN] 智能体 [{agent_info.get('name')}] LLM 调用失败: {e}")
-            return None, f"{model_to_use} (降级兜底)"
+            err_str = str(e)
+            is_auth_error = any(kw in err_str.lower() for kw in ["valid api key", "invalid_api_key", "401", "authentication", "unauthorized", "invalid_argument"])
+            if is_auth_error:
+                cls._failed_providers.add(provider_key)
+                print(f"ℹ️ [提示] 当前大模型 [{provider_name}] 鉴权未通过: {err_str[:90]}... (配置的 API Key 无效或未生效)。已自动无缝切换为【内置量化金融规则引擎】进行审核与组合计算，业务正常运转。")
+            else:
+                print(f"[WARN] 智能体 [{agent_info.get('name')}] LLM 调用失败: {e}")
+            return None, "量化金融规则引擎 (Key未生效)"
 
     # ==============================================================
     # 3. 经典可转债投研圆桌工作流 (Roundtable Workflow)

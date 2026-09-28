@@ -717,7 +717,7 @@ async def run_agents_pipeline(
     try:
         from db import SessionLocal, AgentReportRecord
         with SessionLocal() as session:
-            rpt_id = f"rpt_{int(datetime.now().timestamp())}"
+            rpt_id = f"rpt_{int(datetime.now().timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
             rpt = AgentReportRecord(
                 id=rpt_id,
                 strategy_id=strategy_id,
@@ -883,7 +883,7 @@ async def websocket_agents_stream(websocket: WebSocket):
         try:
             from db import SessionLocal, AgentReportRecord
             with SessionLocal() as session:
-                rpt_id = f"rpt_{int(datetime.now().timestamp())}"
+                rpt_id = f"rpt_{int(datetime.now().timestamp() * 1000)}_{uuid.uuid4().hex[:6]}"
                 rpt = AgentReportRecord(
                     id=rpt_id,
                     strategy_id=strategy_id,
