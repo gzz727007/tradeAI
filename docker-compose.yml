@@ -1,0 +1,25 @@
+services:
+  # 1. Web 可视化交互大屏服务
+  trade-ai-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trade-ai:latest
+    container_name: trade-ai-ui
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUTF8=1
+    volumes:
+      # 持久化数据目录 (行情缓存与历史数据库)
+      - ./data:/app/data
+      # 挂载环境变量配置
+      - ./.env:/app/.env:ro
+    networks:
+      - trade-net
+
+networks:
+  trade-net:
+    driver: bridge

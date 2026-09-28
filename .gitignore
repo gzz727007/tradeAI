@@ -1,0 +1,73 @@
+# ==============================================================
+# TradeAI 核心保护配置: 忽略本地数据、缓存与私密环境配置
+# 确保在执行 git pull, git checkout 或代码升级时，本地数据永不被覆盖或污染
+# ==============================================================
+
+# 1. 核心业务数据库与快照热备份 (Gold Layer - 黄金核心资产)
+data/trade_ai.db*
+data/backups/
+data/export_all_data.json
+data/*.json
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# 2. 本地行情数据湖与大文件缓存 (Silver Layer - Parquet Data Lake)
+data/**/*.parquet
+data/*.parquet
+data/**/.cache/
+data/.cache/
+
+# 保留 data 基础目录
+!data/.gitkeep
+
+# 3. 环境变量与私钥敏感信息
+.env
+.env.local
+.env.*.local
+
+# 4. Python 临时文件与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# 5. 前端构建与依赖产物 (Frontend)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# 6. 编辑器与操作系统缓存
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
