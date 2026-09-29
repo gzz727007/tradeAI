@@ -22,10 +22,56 @@ class StrategyManager:
         """获取所有已注册的策略"""
         session = SessionLocal()
         try:
+            # 确保 AI 动态价格点协同策略已作为系统内置策略注册
+            pt = session.query(Strategy).filter(Strategy.id == "strat_price_trigger").first()
+            if not pt:
+                new_s = Strategy(
+                    id="strat_price_trigger",
+                    name="AI动态价格点协同策略",
+                    category="系统内置",
+                    description="基于大模型动态定价、风控一票否决白名单与脉冲回撤追踪止盈的事件驱动型价格点随时买卖策略。",
+                    params_json=json.dumps({
+                        "default_entry_ceiling": 104.5,
+                        "default_target_price": 120.0,
+                        "default_hard_stop": 128.0,
+                        "default_trailing_drop": 0.025,
+                        "max_holdings": 10,
+                        "max_scale": 10.0,
+                        "pulse_threshold": 0.08,
+                        "sort_by": "double_low"
+                    }, ensure_ascii=False),
+                    version=1
+                )
+                session.add(new_s)
+                session.commit()
+
             records = session.query(Strategy).order_by(Strategy.created_at.asc()).all()
             return [s.to_dict() for s in records]
         finally:
             session.close()
+
+    def create_strategy_instance(self, strat_def: Dict[str, Any]):
+        """根据策略定义动态实例化可执行策略对象 (支持事件驱动价格点与传统配置型)"""
+        s_id = (strat_def.get("id") or "").lower()
+        s_name = strat_def.get("name") or ""
+        params = strat_def.get("params") or {}
+
+        if s_id == "strat_price_trigger" or "价格" in s_name or "price" in s_id or "trigger" in s_id:
+            from strategies.price_trigger_strategy import PriceTriggerCBStrategy
+            return PriceTriggerCBStrategy(
+                name=s_name or "AI动态价格点协同策略",
+                description=strat_def.get("description", ""),
+                default_entry_ceiling=params.get("default_entry_ceiling", 104.5),
+                default_target_price=params.get("default_target_price", 120.0),
+                default_hard_stop=params.get("default_hard_stop", 128.0),
+                default_trailing_drop=params.get("default_trailing_drop", 0.025),
+                max_holdings=params.get("max_holdings", 10),
+                max_scale=params.get("max_scale", 10.0),
+                pulse_threshold=params.get("pulse_threshold", 0.08)
+            )
+
+        from strategies.configurable_strategy import ConfigurableCBStrategy
+        return ConfigurableCBStrategy(strat_def)
 
     def get_strategy(self, strat_id: Optional[str] = None, strategy_id: Optional[str] = None, **kwargs) -> Optional[Dict[str, Any]]:
         """根据策略ID获取单条策略详情"""

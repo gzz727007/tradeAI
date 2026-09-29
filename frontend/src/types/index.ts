@@ -189,6 +189,17 @@ export interface AgentDefinition {
   sort_order: number;
 }
 
+export interface DynamicPriceTarget {
+  bond_code: string;
+  bond_name: string;
+  entry_ceiling: number;
+  target_price: number;
+  hard_stop_price: number;
+  trailing_stop_drop: number;
+  veto: boolean;
+  rationale: string;
+}
+
 export interface AgentResult {
   has_run: boolean;
   run_time?: string;
@@ -221,6 +232,7 @@ export interface AgentResult {
     severity_stars?: number;
   }>;
   all_bond_speeches?: Record<string, AgentSpeech[]>;
+  dynamic_targets?: Record<string, DynamicPriceTarget>;
   final_portfolio: Array<{
     bond_code: string;
     bond_name: string;
@@ -229,6 +241,7 @@ export interface AgentResult {
     weight: number;
     rating_stars: number;
     pm_verdict: string;
+    dynamic_targets?: DynamicPriceTarget;
   }>;
   vetoed_bonds: any[];
   report_md?: string;

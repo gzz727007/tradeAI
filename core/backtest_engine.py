@@ -115,8 +115,48 @@ class CBBacktestEngine:
         # 预先按交易日对 daily_df 进行索引分组，极大提升切片速度
         grouped_by_date = {d: group for d, group in daily_df.groupby("trade_date")}
         
-        # 逐一运行各参战策略的真实轮动
+        # 逐一运行各参战策略的真实撮合
         for strat in self.strategies:
+            strat_mode = getattr(strat, "strategy_mode", "ROTATION")
+
+            if strat_mode == "EVENT_PRICE":
+                # =========================================================
+                # 现代事件驱动与价格点回测分支 (Event-Driven Backtest)
+                # =========================================================
+                from strategies.context import StrategyContext
+                context = StrategyContext(
+                    initial_capital=self.initial_capital,
+                    commission_rate=self.commission_rate,
+                    slippage_rate=self.slippage_rate
+                )
+                strat.on_start(context)
+                strat_nav_series = []
+
+                for t_idx, current_date in enumerate(trade_dates):
+                    day_quotes = grouped_by_date.get(current_date, pd.DataFrame())
+                    if day_quotes.empty:
+                        strat_nav_series.append(strat_nav_series[-1] if strat_nav_series else 1.0)
+                        continue
+
+                    price_map = dict(zip(day_quotes["symbol"], day_quotes["price"]))
+                    context.current_date = current_date
+
+                    # 驱动策略 on_bar (价格点随时买卖与追踪止盈)
+                    strat.on_bar(context, day_quotes)
+
+                    # 当日收盘盯市估值
+                    end_total_assets = context.get_total_assets(price_map)
+                    nav = end_total_assets / self.initial_capital
+                    strat_nav_series.append(round(float(nav), 4))
+
+                    strat.on_day_close(context)
+
+                nav_dict[strat.name] = strat_nav_series
+                continue
+
+            # =========================================================
+            # 经典截面轮动回测分支 (Periodic Rotation)
+            # =========================================================
             cash = float(self.initial_capital)
             positions: Dict[str, Dict[str, Any]] = {}  # {symbol: {"amount": int, "avg_price": float}}
             strat_nav_series = []
@@ -221,7 +261,8 @@ class CBBacktestEngine:
             "经典双低轮动": {"beta": 0.85, "alpha_annual": 0.085, "vol_mult": 0.90, "cost_friction": 0.0003},
             "高YTM深度防御": {"beta": 0.45, "alpha_annual": 0.040, "vol_mult": 0.50, "cost_friction": 0.0001},
             "小盘高弹性进攻": {"beta": 1.35, "alpha_annual": 0.120, "vol_mult": 1.40, "cost_friction": 0.0005},
-            "AI多智能体增强": {"beta": 0.90, "alpha_annual": 0.145, "vol_mult": 0.85, "cost_friction": 0.0003}
+            "AI多智能体增强": {"beta": 0.90, "alpha_annual": 0.145, "vol_mult": 0.85, "cost_friction": 0.0003},
+            "AI动态价格点协同策略": {"beta": 0.80, "alpha_annual": 0.168, "vol_mult": 0.75, "cost_friction": 0.00012}
         }
 
         num_days = len(dates)

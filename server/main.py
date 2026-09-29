@@ -142,10 +142,11 @@ def get_system_status():
         return _STATUS_CACHE["data"]
 
     try:
-        quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
-        ledger.update_daily_valuation(quotes_df, force=False)
+        quotes_df = CBDataFetcher.get_cached_quotes_fast()
+        if not quotes_df.empty:
+            ledger.update_daily_valuation(quotes_df, force=False)
     except Exception as e:
-        print(f"⚠️ 系统状态接口获取实时行情异常 (已容错): {e}")
+        print(f"⚠️ 系统状态接口读取行情异常 (已容错): {e}")
         quotes_df = pd.DataFrame()
     
     # 检查本地数据湖状态
@@ -278,7 +279,7 @@ def run_backtest(req: BacktestRequest):
     battle_strats = []
     for sid in req.strategy_ids:
         if sid in all_strats:
-            battle_strats.append(ConfigurableCBStrategy(all_strats[sid]))
+            battle_strats.append(strategy_manager.create_strategy_instance(all_strats[sid]))
             
     if not battle_strats:
         raise HTTPException(status_code=400, detail="未选择有效的参战策略")

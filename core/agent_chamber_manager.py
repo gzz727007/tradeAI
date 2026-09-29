@@ -252,7 +252,8 @@ class AgentChamberManager:
             "final_portfolio": final_portfolio,
             "vetoed_bonds": vetoed_bonds,
             "all_bond_speeches": all_bond_speeches,
-            "report_md": report_md
+            "report_md": report_md,
+            "dynamic_targets": getattr(pm_agent, "dynamic_targets", {})
         }
 
     # ==============================================================

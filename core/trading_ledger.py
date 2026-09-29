@@ -295,12 +295,16 @@ class TradingLedger:
 
         for s in all_strats:
             if s.get("id", "").lower() == ident_lower or s.get("name", "").lower() == ident_lower:
-                return ConfigurableCBStrategy(s)
+                return sm.create_strategy_instance(s)
 
         for s in all_strats:
             s_name = s.get("name", "").lower()
             if ident_lower and (ident_lower in s_name or s_name in ident_lower):
-                return ConfigurableCBStrategy(s)
+                return sm.create_strategy_instance(s)
+
+        if "价格" in strategy_ident or "点" in strategy_ident or "price" in ident_lower or "trigger" in ident_lower:
+            from strategies.price_trigger_strategy import PriceTriggerCBStrategy
+            return PriceTriggerCBStrategy()
 
         if "小盘" in strategy_ident or "动量" in strategy_ident or "弹性" in strategy_ident:
             return ConfigurableCBStrategy({

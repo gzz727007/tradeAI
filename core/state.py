@@ -37,6 +37,16 @@ class ClauseGameResult(TypedDict):
     call_risk_level: str            # "LOW", "MEDIUM", "HIGH"
     game_summary: str
 
+class DynamicPriceTarget(TypedDict):
+    bond_code: str
+    bond_name: str
+    entry_ceiling: float          # 建议买入价上限（低于此价建仓）
+    target_price: float           # 建议第一目标止盈价
+    hard_stop_price: float        # 强赎硬避险警戒线（默认128.0）
+    trailing_stop_drop: float     # 脉冲后最高点回撤追踪止盈容忍度 (例如 0.025 代表 2.5%)
+    veto: bool                    # 信用风控是否一票否决
+    rationale: str                # 定价依据总结
+
 class PortfolioItem(TypedDict):
     bond_code: str
     bond_name: str
@@ -45,6 +55,7 @@ class PortfolioItem(TypedDict):
     weight: float
     rating_stars: int               # 1 ~ 5 星推荐
     pm_verdict: str
+    dynamic_targets: Optional[DynamicPriceTarget]
 
 class CBTradeState(TypedDict):
     # 基础运行上下文
@@ -62,6 +73,7 @@ class CBTradeState(TypedDict):
     # 阶段 3: 仲裁与最终决策
     final_portfolio: List[PortfolioItem]
     vetoed_bonds: List[Dict[str, str]]
+    dynamic_targets: Dict[str, DynamicPriceTarget]
     
     # 阶段 4: 报告展示
     daily_report_markdown: str

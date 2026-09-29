@@ -557,6 +557,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                     <th className="py-2.5 px-4">转债名称</th>
                     <th className="py-2.5 px-4">现价 (元)</th>
                     <th className="py-2.5 px-4">双低综合值</th>
+                    <th className="py-2.5 px-4">AI动态定价 (止盈/防线)</th>
                     <th className="py-2.5 px-4">建议权重</th>
                     <th className="py-2.5 px-4">推荐星级</th>
                     <th className="py-2.5 px-4">PM 裁决结论与配置理由</th>
@@ -566,6 +567,7 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                   {result.final_portfolio.map((p) => {
                     const stars = Array(p.rating_stars || 4).fill('⭐').join('');
                     const isSelected = p.bond_code === selectedBondCode;
+                    const dt = result.dynamic_targets?.[p.bond_code] || p.dynamic_targets;
                     return (
                       <tr
                         key={p.bond_code}
@@ -578,6 +580,16 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                         <td className="py-2.5 px-4 font-bold text-slate-800">{p.bond_name}</td>
                         <td className="py-2.5 px-4 text-slate-700">¥{p.price.toFixed(2)}</td>
                         <td className="py-2.5 px-4 text-blue-600 font-semibold">{p.double_low.toFixed(1)}</td>
+                        <td className="py-2.5 px-4">
+                          {dt ? (
+                            <div className="flex flex-col text-[11px] leading-tight">
+                              <span className="font-bold text-emerald-600">止盈: ≥¥{dt.target_price}</span>
+                              <span className="text-slate-400 text-[10px]">强赎: ¥{dt.hard_stop_price}</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
                         <td className="py-2.5 px-4 font-semibold text-emerald-600">
                           {Math.round(p.weight * 1000) / 10}%
                         </td>
@@ -661,6 +673,47 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
                 </div>
               </div>
             )}
+
+            {/* AI Dynamic Price Targets Card (随时买卖动态点位推演) */}
+            {(() => {
+              const dt = result.dynamic_targets?.[selectedBondCode] || 
+                         result.final_portfolio.find((p) => p.bond_code === selectedBondCode)?.dynamic_targets;
+              if (!dt) return null;
+              return (
+                <div className="bg-gradient-to-r from-indigo-50/70 via-purple-50/40 to-blue-50/60 p-3.5 rounded-xl border border-indigo-100 shadow-2xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                      <Target className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>AI 智能体动态量化定价 (随时买卖价格点)</span>
+                    </span>
+                    <span className="text-[10px] text-indigo-700 bg-indigo-100/80 px-2 py-0.5 rounded-full font-semibold border border-indigo-200">
+                      双脑协同执行
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div className="bg-white/90 p-2 rounded-lg border border-indigo-100/80 shadow-2xs">
+                      <span className="text-[10px] text-slate-500 block">建议建仓上限</span>
+                      <b className="text-indigo-700 text-sm">≤ ¥{dt.entry_ceiling}</b>
+                    </div>
+                    <div className="bg-white/90 p-2 rounded-lg border border-indigo-100/80 shadow-2xs">
+                      <span className="text-[10px] text-slate-500 block">第一目标止盈</span>
+                      <b className="text-emerald-600 text-sm">≥ ¥{dt.target_price}</b>
+                    </div>
+                    <div className="bg-white/90 p-2 rounded-lg border border-indigo-100/80 shadow-2xs">
+                      <span className="text-[10px] text-slate-500 block">强赎硬防线</span>
+                      <b className="text-rose-600 text-sm">¥{dt.hard_stop_price}</b>
+                    </div>
+                    <div className="bg-white/90 p-2 rounded-lg border border-indigo-100/80 shadow-2xs">
+                      <span className="text-[10px] text-slate-500 block">高点回撤容忍度</span>
+                      <b className="text-slate-800 text-sm">{(dt.trailing_stop_drop * 100).toFixed(1)}%</b>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-600 bg-white/70 p-2 rounded-lg border border-slate-100 leading-relaxed">
+                    💡 <b>定价推演逻辑：</b> {dt.rationale}
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* Courtroom Verdict Banner (If in Courtroom Mode) */}
             {result.chamber_type === 'COURTROOM' && result.court_verdicts?.[selectedBondCode] && (
