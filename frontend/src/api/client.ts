@@ -131,6 +131,15 @@ export const api = {
     return res.json();
   },
 
+  refreshAccountsValuation: async () => {
+    const res = await fetch(`${API_BASE}/accounts/refresh_valuation`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '刷新估值失败');
+    }
+    return res.json();
+  },
+
   createAccount: async (data: { account_id: string; account_name: string; associated_strategy: string; account_type: string; initial_capital: number; auto_seed?: boolean }) => {
     const res = await fetch(`${API_BASE}/accounts`, {
       method: 'POST',

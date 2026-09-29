@@ -401,9 +401,18 @@ def delete_backtest_record(backtest_id: str):
 
 @app.get("/api/accounts")
 def get_accounts(account_type: Optional[str] = None):
-    quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
-    ledger.update_daily_valuation(quotes_df, force=False)
+    # 极速响应：优先使用本地缓存行情核算持仓，绝不因外部网络波动阻塞前端界面
+    quotes_df = CBDataFetcher.get_cached_quotes_fast()
+    if not quotes_df.empty:
+        ledger.update_daily_valuation(quotes_df, force=False)
     return ledger.get_accounts(account_type=account_type)
+
+@app.post("/api/accounts/refresh_valuation")
+def refresh_accounts_valuation():
+    """显式强制拉取最新全市场行情并重新核算所有账户持仓估值"""
+    quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=False)
+    summary = ledger.update_daily_valuation(quotes_df, force=True)
+    return {"message": "最新行情与持仓估值已刷新", "summary": summary}
 
 @app.post("/api/accounts")
 def create_account(req: AccountCreateRequest):

@@ -121,6 +121,20 @@ export const PaperTournament: React.FC = () => {
     loadAccountDetail(accId);
   };
 
+  // 手动触发在线全量行情刷新与持仓重新估值
+  const handleRefreshValuation = async () => {
+    setLoading(true);
+    try {
+      showToast('info', '正在同步最新市场行情并重新评估持仓净值...');
+      await api.refreshAccountsValuation();
+      await loadPaperAccounts(selectedAccId);
+      showToast('success', '行情估值已刷新完成！');
+    } catch (err: any) {
+      showToast('error', err.message || '刷新行情估值失败');
+      setLoading(false);
+    }
+  };
+
   // 启动模拟赛马
   const handleStart = async () => {
     if (!selectedAccId) return;
@@ -476,9 +490,9 @@ export const PaperTournament: React.FC = () => {
             <span>新建赛马账户</span>
           </button>
           <button
-            onClick={() => loadPaperAccounts()}
+            onClick={() => handleRefreshValuation()}
             disabled={loading}
-            className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-2 rounded-xl border border-slate-700 transition-all cursor-pointer"
+            className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-2 rounded-xl border border-slate-700 transition-all cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span>刷新行情估值</span>

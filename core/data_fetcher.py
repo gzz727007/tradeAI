@@ -34,6 +34,17 @@ class CBDataFetcher:
     """可转债数据中心"""
     
     @staticmethod
+    def get_cached_quotes_fast() -> pd.DataFrame:
+        """极速只读本地缓存行情 (0延迟，绝不发起网络阻塞)"""
+        cache_file = CACHE_DIR / "cb_realtime_cache.parquet"
+        if cache_file.exists():
+            try:
+                return pd.read_parquet(cache_file)
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    @staticmethod
     def get_realtime_quotes(use_cache: bool = True, max_cache_age_seconds: int = 1800) -> pd.DataFrame:
         """
         获取全市场可转债实时/最新交易日行情数据
@@ -41,10 +52,26 @@ class CBDataFetcher:
         """
         cache_file = CACHE_DIR / "cb_realtime_cache.parquet"
         
-        # 缓存检查 (默认30分钟内使用缓存)
+        # 缓存检查
         if use_cache and cache_file.exists():
             file_age = time.time() - cache_file.stat().st_mtime
-            if file_age < max_cache_age_seconds:
+            now = datetime.now()
+            is_weekend = now.weekday() >= 5
+            now_time = now.time()
+            # 盘中交易时段: 09:25 ~ 11:35, 12:55 ~ 15:05
+            t_m_open = datetime.strptime("09:25", "%H:%M").time()
+            t_m_close = datetime.strptime("11:35", "%H:%M").time()
+            t_a_open = datetime.strptime("12:55", "%H:%M").time()
+            t_a_close = datetime.strptime("15:05", "%H:%M").time()
+            is_trading_hours = (
+                not is_weekend and (
+                    (t_m_open <= now_time <= t_m_close) or
+                    (t_a_open <= now_time <= t_a_close)
+                )
+            )
+
+            # 休市时段（盘前/夜间/周末行情不变）或缓存未超时，一律瞬间秒级返回本地缓存！
+            if not is_trading_hours or file_age < max_cache_age_seconds:
                 try:
                     df = pd.read_parquet(cache_file)
                     print(f"✅ [缓存命中] 读取本地可转债行情 ({len(df)}只), 缓存时间: {int(file_age)}秒前")
@@ -54,12 +81,12 @@ class CBDataFetcher:
         
         print("🌐 正在从 AkShare 拉取全市场可转债最新行情数据...")
         try:
-            # 获取集思录/东方财富可转债比价表
-            raw_df = ak.bond_cov_comparison()
+            # 优先使用稳定的 bond_zh_cov 接口，避免 bond_cov_comparison 偶发断连
+            raw_df = ak.bond_zh_cov()
         except Exception as e:
-            print(f"⚠️ bond_cov_comparison 失败，尝试备用接口 bond_zh_cov: {e}")
+            print(f"⚠️ bond_zh_cov 失败，尝试备用接口 bond_cov_comparison: {e}")
             try:
-                raw_df = ak.bond_zh_cov()
+                raw_df = ak.bond_cov_comparison()
             except Exception as e2:
                 if cache_file.exists():
                     print(f"⚠️ 网络拉取行情失败 ({e2})，已自动降级读取本地历史行情缓存兜底: {cache_file}")
