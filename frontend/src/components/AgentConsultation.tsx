@@ -151,6 +151,11 @@ export const AgentConsultation: React.FC<AgentConsultationProps> = ({
     if (currentChamberId) {
       params.append('chamber_id', currentChamberId);
     }
+    // WebSocket 鉴权: 后端启用 API_TOKEN 时通过 ?token= 携带 (浏览器 WS 无法自定义请求头)
+    const apiToken = localStorage.getItem('TRADEAI_API_TOKEN') || '';
+    if (apiToken) {
+      params.append('token', apiToken);
+    }
     const query = params.toString() ? `?${params.toString()}` : '';
     const wsUrl = `${protocol}//${window.location.host}/ws/agents/stream${query}`;
     const ws = new WebSocket(wsUrl);

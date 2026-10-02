@@ -338,3 +338,156 @@ class MeetingChamber(Base):
         }
 
 
+class CommitteeDecision(Base):
+    """AI 交易委员会准入决策 (逐只三分析师语义审查留痕)"""
+    __tablename__ = "committee_decisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    trade_date = Column(String(32), nullable=False, index=True, comment="交易日期 YYYY-MM-DD")
+    stage = Column(String(32), nullable=False, default="premarket", comment="审查阶段: premarket(盘前)/midday(午间复检)/manual(手动)")
+    bond_code = Column(String(32), nullable=False, index=True, comment="转债代码")
+    bond_name = Column(String(64), nullable=False, default="", comment="转债简称")
+    decision = Column(String(32), nullable=False, comment="准入结论: approve(准入)/watch(观察-禁新买)/reject(否决)")
+    reason = Column(Text, nullable=True, comment="综合裁决理由")
+    review_json = Column(Text, nullable=True, comment="三分析师审查明细JSON (信用/条款/动量)")
+    created_at = Column(DateTime, default=datetime.now, comment="决策时间")
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "stage", "bond_code", name="uix_committee_decision"),
+    )
+
+    def to_dict(self):
+        import json
+        review = {}
+        if self.review_json:
+            try:
+                review = json.loads(self.review_json)
+            except Exception:
+                review = {}
+        return {
+            "id": self.id,
+            "trade_date": self.trade_date,
+            "stage": self.stage,
+            "bond_code": self.bond_code,
+            "bond_name": self.bond_name,
+            "decision": self.decision,
+            "reason": self.reason or "",
+            "review": review,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else ""
+        }
+
+
+class CommitteePricePlan(Base):
+    """AI 委员会限价交易计划 (约束式定价快照，交易程序严格按此执行)"""
+    __tablename__ = "committee_price_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    trade_date = Column(String(32), nullable=False, index=True, comment="交易日期 YYYY-MM-DD")
+    bond_code = Column(String(32), nullable=False, index=True, comment="转债代码")
+    bond_name = Column(String(64), nullable=False, default="", comment="转债简称")
+    action = Column(String(16), nullable=False, default="HOLD", comment="主操作建议: BUY/SELL/HOLD")
+    buy_limit_price = Column(Float, nullable=True, comment="买入限价 (≤昨收×1.02)")
+    sell_limit_price = Column(Float, nullable=True, comment="卖出限价 (≥昨收×0.98)")
+    band_low = Column(Float, nullable=True, comment="约束区间下界(锚定昨收)")
+    band_high = Column(Float, nullable=True, comment="约束区间上界(锚定昨收)")
+    prev_close = Column(Float, nullable=True, comment="昨收锚定价")
+    current_price = Column(Float, nullable=True, comment="最近一次刷新时的现价")
+    ai_priced = Column(Boolean, default=False, comment="是否 AI 定价 (False=规则兜底)")
+    status = Column(String(32), default="pending", comment="计划状态: pending/executable/missed/alert/expired")
+    reason = Column(Text, nullable=True, comment="定价理由 (AI 给出)")
+    stage = Column(String(32), default="premarket", comment="计划生成阶段")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="最后刷新时间")
+    created_at = Column(DateTime, default=datetime.now, comment="计划创建时间")
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "bond_code", name="uix_committee_plan"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "trade_date": self.trade_date,
+            "bond_code": self.bond_code,
+            "bond_name": self.bond_name,
+            "action": self.action,
+            "buy_limit_price": self.buy_limit_price,
+            "sell_limit_price": self.sell_limit_price,
+            "band_low": self.band_low,
+            "band_high": self.band_high,
+            "prev_close": self.prev_close,
+            "current_price": self.current_price,
+            "ai_priced": bool(self.ai_priced),
+            "status": self.status,
+            "reason": self.reason or "",
+            "stage": self.stage,
+            "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M:%S") if self.updated_at else ""
+        }
+
+
+class CommitteeState(Base):
+    """委员会运行状态单例表 (id=1, 保存总开关/绑定策略/当日调度水位)"""
+    __tablename__ = "committee_state"
+
+    id = Column(Integer, primary_key=True, comment="固定为1")
+    bound_strategy = Column(String(128), default="", comment="绑定的候选策略名 (空=自动取默认双低)")
+    auto_execute = Column(Boolean, default=False, comment="全自动执行总开关 (审查+定价后直接调仓)")
+    enabled = Column(Boolean, default=True, comment="委员会总开关")
+    last_gate_date = Column(String(32), default="", comment="最近一次盘前准入日期")
+    last_midday_date = Column(String(32), default="", comment="最近一次午间复检日期")
+    last_refresh_at = Column(DateTime, nullable=True, comment="最近一次盘中价格刷新时间")
+    last_execute_date = Column(String(32), default="", comment="最近一次自动调仓日期")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    def to_dict(self):
+        return {
+            "bound_strategy": self.bound_strategy or "",
+            "auto_execute": bool(self.auto_execute),
+            "enabled": bool(self.enabled),
+            "last_gate_date": self.last_gate_date or "",
+            "last_midday_date": self.last_midday_date or "",
+            "last_refresh_at": self.last_refresh_at.strftime("%Y-%m-%d %H:%M:%S") if self.last_refresh_at else "",
+            "last_execute_date": self.last_execute_date or "",
+            "updated_at": self.updated_at.strftime("%Y-%m-%d %H:%M:%S") if self.updated_at else ""
+        }
+
+
+class StrategyExperiment(Base):
+    """AI 策略进化实验记录表 (RD-Agent 式 生成→回测→体检→反馈 每轮留痕)"""
+    __tablename__ = "strategy_experiments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    user_idea = Column(Text, nullable=False, comment="用户投资设想原话")
+    round_idx = Column(Integer, nullable=False, default=1, comment="迭代轮次 (1 起)")
+    status = Column(String(32), nullable=False, default="generated", comment="本轮结局: generated/sandbox_rejected/backtest_failed/health_check_failed/succeeded")
+    strategy_id = Column(String(64), nullable=True, index=True, comment="成功后注册的策略ID")
+    strategy_name = Column(String(128), nullable=True, comment="LLM 命名的策略名")
+    generated_code = Column(Text, nullable=True, comment="本轮 LLM 生成的完整策略代码")
+    verdict = Column(Text, nullable=True, comment="体检结论 (成功时为指标亮点摘要)")
+    fail_feedback = Column(Text, nullable=True, comment="结构化失败原因 (回喂给下一轮生成)")
+    metrics_json = Column(Text, nullable=True, comment="本轮回测指标 JSON (nav/回撤/交易数等)")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+
+    def to_dict(self):
+        import json
+        metrics = {}
+        if self.metrics_json:
+            try:
+                metrics = json.loads(self.metrics_json)
+            except Exception:
+                pass
+        return {
+            "id": self.id,
+            "user_idea": self.user_idea,
+            "round_idx": self.round_idx,
+            "status": self.status,
+            "strategy_id": self.strategy_id,
+            "strategy_name": self.strategy_name,
+            "code": self.generated_code or "",
+            "verdict": self.verdict or "",
+            "fail_feedback": self.fail_feedback or "",
+            "metrics": metrics,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else ""
+        }
+
+
+

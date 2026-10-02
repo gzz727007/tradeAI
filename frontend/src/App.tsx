@@ -6,12 +6,13 @@ import { StrategyStudio } from './components/StrategyStudio';
 import { PaperTournament } from './components/PaperTournament';
 import { RealAccounts } from './components/RealAccounts';
 import { AgentConsultation } from './components/AgentConsultation';
+import { TradingCommittee } from './components/TradingCommittee';
 import { Strategy } from './types';
 import { api } from './api/client';
-import { Layers, Gamepad2, Wallet, Bot } from 'lucide-react';
+import { Layers, Gamepad2, Wallet, Bot, Gavel } from 'lucide-react';
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<'studio' | 'paper' | 'real' | 'agent'>('studio');
+  const [activeTab, setActiveTab] = useState<'studio' | 'paper' | 'real' | 'agent' | 'committee'>('studio');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDataLakeOpen, setIsDataLakeOpen] = useState(false);
   const [startDate, setStartDate] = useState('2023-01-01');
@@ -115,6 +116,18 @@ export function App() {
               <Bot className="w-4 h-4" />
               <span>4. 今日 AI 智能体会诊室</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('committee')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'committee'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <Gavel className="w-4 h-4" />
+              <span>5. AI 交易委员会</span>
+            </button>
           </div>
         </div>
 
@@ -143,6 +156,9 @@ export function App() {
             strategies={strategies}
           />
         )}
+
+        {/* Tab 5: Trading Committee */}
+        {activeTab === 'committee' && <TradingCommittee />}
       </main>
 
       {/* Global Settings Modal */}

@@ -13,8 +13,9 @@ import asyncio
 import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Body
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -46,6 +47,12 @@ app = FastAPI(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    # 启动 AI 交易委员会后台调度线程 (09:15准入 / 每30分钟刷新 / 11:35复检 / 15:00归档)
+    try:
+        from core.trading_committee import committee
+        committee.start_scheduler()
+    except Exception as e:
+        print("[WARN] 交易委员会调度线程启动失败:", e)
     # 自动从数据库恢复最新一次 AI 投研会诊记录到缓存 (重启/升级代码不丢失)
     try:
         from db import SessionLocal, AgentReportRecord
@@ -57,14 +64,30 @@ def on_startup():
     except Exception as e:
         print("[WARN] 恢复会诊记录缓存提示:", e)
 
-# 允许跨域访问 (开发环境与独立 SPA 前端)
+# 跨域来源从环境变量 CORS_ORIGINS 读取 (逗号分隔，默认仅允许本地 Vite 开发服务器)。
+# 注意：生产环境 SPA 由 FastAPI 同源托管，无需跨域；不再使用 allow_origins=["*"]。
+_allowed_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Token"],
 )
+
+@app.middleware("http")
+async def api_token_guard(request: Request, call_next):
+    """
+    API Token 鉴权中间件：
+    - settings.API_TOKEN 为空 (本地默认) → 放行，零配置无感使用；
+    - 设置了 API_TOKEN (部署/公网场景) → 所有 /api/* 请求必须携带 X-API-Token 请求头，
+      防止局域网/公网任意访客修改 LLM Key、提交记账单、烧毁回测与智能体 API 额度。
+    """
+    if settings.API_TOKEN and request.url.path.startswith("/api/"):
+        supplied = request.headers.get("X-API-Token", "")
+        if supplied != settings.API_TOKEN:
+            return JSONResponse(status_code=401, content={"detail": "鉴权失败: 缺失或错误的 X-API-Token 请求头"})
+    return await call_next(request)
 
 # 智能体会诊全局缓存 (避免每次刷新重新消耗 API)
 AGENT_CACHE: Dict[str, Any] = {}
@@ -266,8 +289,46 @@ def delete_strategy(strategy_id: str):
 
 @app.post("/api/strategies/ai-discover")
 def ai_discover_strategy(req: AIDiscoverRequest):
-    new_strat = strategy_manager.ai_discover_strategy(user_idea=req.user_idea)
+    # 失败必须如实暴露给前端，绝不静默降级成模板策略误导用户
+    try:
+        new_strat = strategy_manager.ai_discover_strategy(user_idea=req.user_idea)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI 策略挖掘异常: {type(e).__name__}: {str(e)[:200]}")
     return {"message": "AI 成功挖掘新策略", "strategy": new_strat}
+
+class AIEvolveRequest(BaseModel):
+    user_idea: str = ""
+    max_rounds: int = 3
+
+@app.post("/api/strategies/ai-evolve")
+def ai_evolve_strategy(req: AIEvolveRequest):
+    """
+    AI 策略深度进化 (RD-Agent 式): LLM 生成策略代码 → 沙箱安全闸门 → 真实冒烟回测
+    → 健康体检 → 失败结构化反馈重生成 (最多 max_rounds 轮) → 成功注册入库
+    全程可能持续数分钟 (含多轮回测), 同步 def 走线程池不阻塞事件循环
+    """
+    from core.strategy_evolver import StrategyEvolver, EvolveError
+    try:
+        result = StrategyEvolver().evolve(user_idea=req.user_idea, max_rounds=max(1, min(req.max_rounds, 5)))
+    except EvolveError as e:
+        raise HTTPException(status_code=502, detail=str(e)[:800])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI 策略进化异常: {type(e).__name__}: {str(e)[:300]}")
+    return {"message": "AI 策略进化成功", **result}
+
+@app.get("/api/strategies/experiments")
+def list_strategy_experiments(limit: int = 50):
+    """AI 进化实验历史 (每轮代码/指标/结论可回溯)"""
+    from db.session import SessionLocal
+    from db.models import StrategyExperiment
+    session = SessionLocal()
+    try:
+        rows = session.query(StrategyExperiment).order_by(StrategyExperiment.id.desc()).limit(limit).all()
+        return [r.to_dict() for r in rows]
+    finally:
+        session.close()
 
 # ==============================================================
 # 3. 策略历史对决回测 API (Backtest Arena)
@@ -311,7 +372,8 @@ def run_backtest(req: BacktestRequest):
     # 写入数据库事务归档 (保持回测历史完整可追溯)
     session = SessionLocal()
     try:
-        bm_metrics = metrics_summary.get("中证转债 (基准)", {})
+        # 注意：基准列键名与引擎输出保持一致 ("中证转债基准")
+        bm_metrics = metrics_summary.get("中证转债基准", {})
         for sid in req.strategy_ids:
             if sid in all_strats:
                 strat_def = all_strats[sid]
@@ -322,8 +384,12 @@ def run_backtest(req: BacktestRequest):
                     "dates": dates,
                     "nav": nav_series.get(s_name, []),
                     "drawdown": dd_series.get(s_name, []),
-                    "benchmark_nav": nav_series.get("中证转债 (基准)", [])
+                    "benchmark_nav": nav_series.get("中证转债基准", [])
                 }
+                # 日胜率 = 净值上涨交易日占比 (逐日环比)
+                _navs = nav_series.get(s_name, [])
+                _up_days = sum(1 for a, b in zip(_navs, _navs[1:]) if b > a)
+                _win_rate = round(_up_days / max(1, len(_navs) - 1) * 100, 2)
                 record = BacktestRecord(
                     id=bt_id,
                     strategy_id=sid,
@@ -333,10 +399,10 @@ def run_backtest(req: BacktestRequest):
                     rebalance_freq=req.rebalance_interval_days,
                     mode=req.mode,
                     total_return=float(s_metrics.get("total_return", 0.0)),
-                    annual_return=float(s_metrics.get("annual_return", 0.0)),
+                    annual_return=float(s_metrics.get("cagr", 0.0)),
                     max_drawdown=float(s_metrics.get("max_drawdown", 0.0)),
                     sharpe_ratio=float(s_metrics.get("sharpe_ratio", 0.0)),
-                    win_rate=float(s_metrics.get("win_rate", 0.0)),
+                    win_rate=float(_win_rate),
                     benchmark_return=float(bm_metrics.get("total_return", 0.0)),
                     metrics_json=json.dumps(s_metrics, ensure_ascii=False),
                     curve_data_json=json.dumps(curve_payload, ensure_ascii=False),
@@ -732,10 +798,12 @@ def delete_agent_report(report_id: str):
         raise HTTPException(status_code=404, detail="未找到该历史会审报告")
 
 @app.post("/api/agents/run")
-async def run_agents_pipeline(
+def run_agents_pipeline(
     strategy_id: Optional[str] = Query(None),
     chamber_id: Optional[str] = Query("chamber_cb_roundtable")
 ):
+    # 注意：本端点为同步 def，FastAPI 会自动放入线程池执行，
+    # 避免数十次串行 LLM 调用阻塞事件循环导致 WebSocket/其余 API 无响应。
     if hasattr(strategy_id, "default"):
         strategy_id = strategy_id.default
     if not isinstance(strategy_id, str):
@@ -838,6 +906,12 @@ def manual_notify():
 
 @app.websocket("/ws/agents/stream")
 async def websocket_agents_stream(websocket: WebSocket):
+    # WebSocket 鉴权: 启用了 API_TOKEN 时必须通过 ?token= 或 X-API-Token 头携带 (浏览器 WS 无法自定义请求头)
+    if settings.API_TOKEN:
+        supplied = websocket.headers.get("x-api-token", "") or websocket.query_params.get("token", "")
+        if supplied != settings.API_TOKEN:
+            await websocket.close(code=1008)  # Policy Violation: 未鉴权的 WS 连接直接拒绝
+            return
     await websocket.accept()
     strategy_id = websocket.query_params.get("strategy_id")
     chamber_id = websocket.query_params.get("chamber_id", "chamber_cb_roundtable")
@@ -859,13 +933,13 @@ async def websocket_agents_stream(websocket: WebSocket):
         })
         await asyncio.sleep(0.4)
         
-        quotes_df = CBDataFetcher.get_realtime_quotes(use_cache=True)
+        quotes_df = await asyncio.to_thread(CBDataFetcher.get_realtime_quotes, use_cache=True)
         await websocket.send_json({
             "step": "screening",
             "message": f"🔍 [Node 1: 量化初筛 Agent] 挂载策略【{strat_name}】，执行价格({strat_params['min_price']}~{strat_params['max_price']}元)、规模(≤{strat_params['max_scale']}亿)、溢价率(≤{strat_params['max_premium']}%)精准圈定..."
         })
         
-        candidates = screener.screen(quotes_df)
+        candidates = await asyncio.to_thread(screener.screen, quotes_df)
         await websocket.send_json({
             "step": "screening_done",
             "candidates_count": len(candidates),
@@ -897,7 +971,9 @@ async def websocket_agents_stream(websocket: WebSocket):
                 "step": "judge",
                 "message": "⚖️ [合议庭终审裁决] 主审首席大法官兼听多空论证，敲槌宣读终审判决书与量刑仓位..."
             })
-            chamber_result = agent_chamber_manager.run_courtroom_deliberation(candidates, chamber_info)
+            chamber_result = await asyncio.to_thread(
+                agent_chamber_manager.run_courtroom_deliberation, candidates, chamber_info
+            )
             await asyncio.sleep(0.4)
         else:
             # 圆桌投研工作流
@@ -929,7 +1005,9 @@ async def websocket_agents_stream(websocket: WebSocket):
                 "step": "pm",
                 "message": "👔 [Node 5: 投资总监 Agent · PM] 多空辩论仲裁汇总，生成最终组合配置与评级权重..."
             })
-            chamber_result = agent_chamber_manager.run_roundtable_deliberation(candidates, chamber_info)
+            chamber_result = await asyncio.to_thread(
+                agent_chamber_manager.run_roundtable_deliberation, candidates, chamber_info
+            )
             await asyncio.sleep(0.4)
 
         credit_agent = CreditAnalystAgent()
@@ -982,10 +1060,10 @@ async def websocket_agents_stream(websocket: WebSocket):
         except Exception as e:
             print("[WARN] 持久化智能体会诊记录到数据库失败:", e)
 
-        # 自动广播推送飞书/微信群
+        # 自动广播推送飞书微信群
         try:
             from notification.notifier import Notifier
-            Notifier.notify_all(res["report_md"])
+            await asyncio.to_thread(Notifier.notify_all, res["report_md"])
         except Exception:
             pass
         
@@ -1091,6 +1169,63 @@ def test_llm_connection(req: LLMTestRequest):
         base_url=req.base_url,
         model=req.model
     )
+
+
+# ==============================================================
+# AI 交易委员会 API (盘前准入 / 约束式定价 / 盘中刷新 / 自动执行)
+# ==============================================================
+
+class CommitteeSettingsRequest(BaseModel):
+    bound_strategy: Optional[str] = None
+    auto_execute: Optional[bool] = None
+    enabled: Optional[bool] = None
+
+class CommitteeRunRequest(BaseModel):
+    """手动触发请求; force=true 可跳过休市检查 (仅限休市日测试)"""
+    force: bool = False
+
+@app.get("/api/committee/today")
+def committee_today():
+    """今日委员会总览: 状态开关 + 各阶段准入决策 + 限价交易计划"""
+    from core.trading_committee import committee
+    return committee.get_today_overview()
+
+@app.post("/api/committee/run_premarket")
+def committee_run_premarket(req: Optional[CommitteeRunRequest] = None):
+    """手动触发盘前准入 (三分析师逐只审查 + 生成限价计划); 休市日默认拦截"""
+    from core.trading_committee import committee
+    return committee.premarket_gate(stage="premarket", force=bool(req.force) if req else False)
+
+@app.post("/api/committee/run_midday")
+def committee_run_midday(req: Optional[CommitteeRunRequest] = None):
+    """手动触发午间复检 (重审准入 + 盘中现价重定价 + 持仓警示); 休市日默认拦截"""
+    from core.trading_committee import committee
+    return committee.midday_review(force=bool(req.force) if req else False)
+
+@app.post("/api/committee/refresh_prices")
+def committee_refresh_prices():
+    """手动触发盘中价格刷新 (更新计划可成交状态, 不耗 LLM)"""
+    from core.trading_committee import committee
+    return committee.price_refresh()
+
+@app.post("/api/committee/settings")
+def committee_update_settings(req: CommitteeSettingsRequest):
+    """更新委员会设置: 绑定策略 / 全自动执行总开关 / 总开关"""
+    from core.trading_committee import committee
+    return committee.update_settings(req.bound_strategy, req.auto_execute, req.enabled)
+
+@app.post("/api/committee/execute_now")
+def committee_execute_now():
+    """手动按当日委员会限价计划立即执行调仓 (无视 auto_execute 开关)"""
+    from core.trading_committee import committee
+    results = committee.execute_now()
+    return {"success": True, "executed": results, "count": len(results)}
+
+@app.get("/api/committee/history")
+def committee_history(limit: int = 100):
+    """委员会历史决策日志"""
+    from core.trading_committee import committee
+    return {"history": committee.get_history(limit)}
 
 
 

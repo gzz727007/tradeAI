@@ -66,6 +66,26 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
   // AI discovery form
   const [aiIdea, setAiIdea] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiMode, setAiMode] = useState<'discover' | 'evolve'>('discover');
+  const [viewingCodeStrategy, setViewingCodeStrategy] = useState<Strategy | null>(null);
+  const [showExperiments, setShowExperiments] = useState(false);
+  const [experiments, setExperiments] = useState<any[]>([]);
+  const [loadingExperiments, setLoadingExperiments] = useState(false);
+
+  const loadExperiments = async () => {
+    setLoadingExperiments(true);
+    try {
+      setExperiments(await api.listExperiments(100));
+    } finally {
+      setLoadingExperiments(false);
+    }
+  };
+
+  // 查找某策略对应的评审意见 (成功实验的 _review 明细)
+  const findReviewFor = (strategyId: string) => {
+    const exp = experiments.find((e) => e.strategy_id === strategyId && e.status === 'succeeded');
+    return exp?.metrics?._review || [];
+  };
   const [llmStatus, setLlmStatus] = useState<any>(null);
 
 
@@ -160,7 +180,29 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
       loadStrategies();
     } catch (err) {
       setAiGenerating(false);
-      alert('AI探索策略失败');
+      // 如实展示后端返回的真实失败原因 (如 LLM 连续失败/未配置)
+      alert(err instanceof Error ? err.message : 'AI探索策略失败');
+    }
+  };
+
+  const handleAiEvolve = async () => {
+    setAiGenerating(true);
+    try {
+      const res = await api.aiEvolveStrategy(aiIdea, 3);
+      setAiGenerating(false);
+      setIsAiModalOpen(false);
+      setAiIdea('');
+      loadStrategies();
+      const rounds = res.rounds || [];
+      const succeedRound = rounds.find((r: any) => r.status === 'succeeded');
+      const metricSummary = succeedRound?.metrics?.total_return != null
+        ? `，全量回测累计收益 ${(succeedRound.metrics.total_return * 100).toFixed(1)}%`
+        : '';
+      const usedRounds = succeedRound?.round || rounds.length;
+      alert(`AI 代码进化成功 (${usedRounds} 轮迭代通过验证${metricSummary})。\n\n策略「${res.strategy?.name || ''}」已入库。接下来:\n1. 在策略卡片点「查看代码」审阅 AI 写的代码与评审团意见\n2. 点「对决」跑历史回测验证\n3. 到「模拟锦标赛」将策略投入实时模拟盘`);
+    } catch (err) {
+      setAiGenerating(false);
+      alert(err instanceof Error ? err.message : 'AI 策略进化失败');
     }
   };
 
@@ -470,6 +512,14 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>AI 探索新策略</span>
               </button>
+              <button
+                onClick={() => { setShowExperiments(true); if (!experiments.length) loadExperiments(); }}
+                className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 text-xs font-semibold px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                title="查看 AI 代码进化的每轮实验: 代码/回测指标/评审意见"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>实验记录</span>
+              </button>
             </div>
           </div>
 
@@ -532,7 +582,30 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                       {s.description}
                     </p>
 
-                    {/* 6-Cell Matrix */}
+                    {/* 6-Cell Matrix / AI 代码策略专属信息 */}
+                    {p.__code__ ? (
+                      <div className="bg-indigo-50/60 p-2.5 rounded-lg border border-indigo-100 text-center mb-3">
+                        <div className="grid grid-cols-3 gap-2 mb-1.5">
+                          <div>
+                            <div className="text-[10px] text-indigo-400 font-medium">策略类型</div>
+                            <div className="text-xs font-bold text-indigo-800">
+                              {(p.__code__.match(/BaseEventStrategy|BaseCBStrategy/) || [])[0] === 'BaseEventStrategy' ? '事件驱动' : '截面轮动'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-indigo-400 font-medium">代码规模</div>
+                            <div className="text-xs font-bold text-indigo-800">{p.__code__.split('\n').length} 行</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-indigo-400 font-medium">数据维度</div>
+                            <div className="text-xs font-bold text-indigo-800">
+                              {(p.__code__.match(/stock_market_cap|stock_mom_20|remaining_years|premium_rate|double_low/g) || []).length >= 2 ? '多维因子' : '单因子'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[10px] text-indigo-500">AI 编写 · 沙箱验证 · 评审团审查通过</div>
+                      </div>
+                    ) : (
                     <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 text-center mb-3">
                       <div>
                         <div className="text-[10px] text-slate-400 font-medium">价格区间</div>
@@ -571,12 +644,23 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                         </div>
                       </div>
                     </div>
+                    )}
                   </div>
 
                   {/* Action Bar */}
                   <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 gap-1.5">
                     {/* Primary Navigation & Action */}
                     <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      {p.__code__ && (
+                        <button
+                          onClick={() => { setViewingCodeStrategy(s); if (!experiments.length) loadExperiments(); }}
+                          className="flex items-center justify-center gap-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold py-1.5 px-2 rounded-lg border border-indigo-200 transition-colors cursor-pointer whitespace-nowrap truncate"
+                          title="查看 AI 生成的策略代码与评审团意见"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                          <span>查看代码</span>
+                        </button>
+                      )}
                       <button
                         onClick={() => openStrategyModal(s, false, false)}
                         className="flex-1 flex items-center justify-center gap-1 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold py-1.5 px-2 rounded-lg border border-slate-200 transition-colors cursor-pointer whitespace-nowrap truncate"
@@ -763,6 +847,24 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
 
           {backtestResult && (
             <div className="space-y-4">
+              {/* Simulated Data Warning Banner */}
+              {(() => {
+                const simulatedStrats = Object.entries(backtestResult.metrics_summary)
+                  .filter(([name, m]) => m.is_simulated && name !== '中证转债基准')
+                  .map(([name]) => name);
+                if (simulatedStrats.length === 0) return null;
+                return (
+                  <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-800 text-xs font-medium">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      ⚠️ 数据降级警示：{simulatedStrats.length} 个策略 ({simulatedStrats.join('、')}) 因本地真实个券历史数据不足，
+                      当前展示的是「因子特征推演」合成的模拟净值 (alpha/beta 参数生成)，并非真实历史撮合结果，
+                      指标仅供风格参考，请勿作为实盘决策依据。前往「数据湖」完成全量历史下载后可获得真实回测。
+                    </span>
+                  </div>
+                );
+              })()}
+
               {/* Highlight Metrics */}
               {(() => {
                 const entries = Object.entries(backtestResult.metrics_summary);
@@ -856,7 +958,12 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                     <tbody className="divide-y divide-slate-100">
                       {Object.entries(backtestResult.metrics_summary).map(([name, m]) => (
                         <tr key={name} className="hover:bg-slate-50/50">
-                          <td className="py-2.5 px-4 font-semibold text-slate-800">{name}</td>
+                          <td className="py-2.5 px-4 font-semibold text-slate-800">
+                            {name}
+                            {m.is_simulated && (
+                              <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-bold align-middle">模拟</span>
+                            )}
+                          </td>
                           <td className="py-2.5 px-4 text-emerald-600 font-semibold">+{m.cagr}%</td>
                           <td className="py-2.5 px-4 text-rose-600 font-semibold">-{m.max_drawdown}%</td>
                           <td className="py-2.5 px-4 text-slate-700">{m.sharpe_ratio}</td>
@@ -1058,6 +1165,28 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 调用金融大模型基于市场微观博弈与异动特征，自主推演并构建全新量化策略：
               </p>
 
+              {/* 模式选择: 参数挖掘 vs 代码进化 */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={aiGenerating}
+                  onClick={() => setAiMode('discover')}
+                  className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${aiMode === 'discover' ? 'border-purple-500 bg-purple-50' : 'border-slate-200 hover:border-slate-300'} disabled:opacity-50`}
+                >
+                  <div className="font-bold text-slate-800">参数挖掘 <span className="text-[10px] text-slate-400">(~20秒)</span></div>
+                  <div className="text-slate-500 mt-0.5">生成选券参数矩阵，走经典双低轮动框架</div>
+                </button>
+                <button
+                  type="button"
+                  disabled={aiGenerating}
+                  onClick={() => setAiMode('evolve')}
+                  className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${aiMode === 'evolve' ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-300'} disabled:opacity-50`}
+                >
+                  <div className="font-bold text-slate-800">代码进化 <span className="text-[10px] text-amber-500">(~数分钟)</span></div>
+                  <div className="text-slate-500 mt-0.5">AI 编写策略代码，沙箱+回测+评审团语义审查自动验证</div>
+                </button>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   💡 给 AI 的探索灵感 (可选，留空则让 AI 自由挖掘市场规律):
@@ -1080,7 +1209,11 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
               {aiGenerating && (
                 <div className="bg-purple-50 p-3 rounded-lg border border-purple-200 flex items-center gap-3 text-xs text-purple-700 animate-pulse">
                   <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                  <span>大模型正在推演市场微观特征，数学化生成专属参数矩阵与选券逻辑...</span>
+                  <span>
+                    {aiMode === 'evolve'
+                      ? '代码进化中: LLM 编写策略 → 沙箱安全校验 → 真实历史回测 → 体检反馈迭代 (最长数分钟，请勿关闭)...'
+                      : '大模型正在推演市场微观特征，数学化生成专属参数矩阵与选券逻辑...'}
+                  </span>
                 </div>
               )}
 
@@ -1096,18 +1229,18 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 <button
                   type="button"
                   disabled={aiGenerating}
-                  onClick={handleAiDiscover}
+                  onClick={aiMode === 'evolve' ? handleAiEvolve : handleAiDiscover}
                   className="px-4 py-2 text-xs font-semibold text-white bg-linear-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-lg shadow-xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   {aiGenerating ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>正在探索...</span>
+                      <span>{aiMode === 'evolve' ? '进化验证中...' : '正在探索...'}</span>
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-3.5 h-3.5" />
-                      <span>启动深度探索与生成</span>
+                      <span>{aiMode === 'evolve' ? '启动代码进化' : '启动深度探索与生成'}</span>
                     </>
                   )}
                 </button>
@@ -1118,8 +1251,99 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* Modal: 查看策略详细档案 */}
+      {/* Modal: AI 生成策略代码查看器 (含评审团意见) */}
       {/* ======================================================== */}
+      {viewingCodeStrategy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4" onClick={() => setViewingCodeStrategy(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full border border-slate-200 max-h-[88vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-slate-100 shrink-0">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                  AI 策略代码: {viewingCodeStrategy.name}
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">该代码在沙箱中受限执行 · 通过冒烟回测与健康体检 · 经评审团语义审查</p>
+              </div>
+              <button onClick={() => setViewingCodeStrategy(null)} className="text-slate-400 hover:text-slate-600 text-xl leading-none cursor-pointer">×</button>
+            </div>
+            <div className="overflow-y-auto p-4 space-y-4">
+              <pre className="bg-slate-900 text-slate-100 text-[11px] leading-5 p-4 rounded-xl overflow-x-auto font-mono whitespace-pre">
+                {viewingCodeStrategy.params?.__code__ || '// 代码缺失'}
+              </pre>
+              {(() => {
+                const reviews = findReviewFor(viewingCodeStrategy.id);
+                if (!reviews.length) return null;
+                return (
+                  <div className="border border-slate-200 rounded-xl p-3">
+                    <div className="text-xs font-bold text-slate-700 mb-2">评审团意见</div>
+                    <div className="space-y-2">
+                      {reviews.map((r: any, i: number) => (
+                        <div key={i} className="flex gap-2 text-xs">
+                          <span className={`shrink-0 font-bold px-1.5 py-0.5 rounded text-[10px] ${r.verdict === 'pass' ? 'bg-emerald-50 text-emerald-700' : r.verdict === 'warn' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
+                            {r.verdict === 'pass' ? '通过' : r.verdict === 'warn' ? '提示' : '否决'}
+                          </span>
+                          <div>
+                            <span className="font-semibold text-slate-600">{r.reviewer}: </span>
+                            <span className="text-slate-500">{r.issue || '无实质问题'}</span>
+                            {r.suggestion && <div className="text-slate-400 mt-0.5">建议: {r.suggestion}</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 flex items-start gap-2">
+                <Play className="w-3.5 h-3.5 shrink-0 mt-0.5 fill-current" />
+                <span>
+                  下一步: 点击卡片上的「对决」进行历史回测验证 → 到「模拟锦标赛」创建账户将此策略投入实时模拟盘 → 表现稳定后可在「实盘账户」接入。
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* Modal: AI 进化实验历史 */}
+      {/* ======================================================== */}
+      {showExperiments && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4" onClick={() => setShowExperiments(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full border border-slate-200 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-slate-100 shrink-0">
+              <h3 className="font-bold text-slate-900 text-sm">AI 进化实验记录 <span className="text-slate-400 font-normal">({experiments.length})</span></h3>
+              <button onClick={() => setShowExperiments(false)} className="text-slate-400 hover:text-slate-600 text-xl leading-none cursor-pointer">×</button>
+            </div>
+            <div className="overflow-y-auto p-4 space-y-2.5">
+              {loadingExperiments ? (
+                <div className="text-center text-xs text-slate-400 py-8"><RefreshCw className="w-4 h-4 animate-spin inline mr-1" />加载中...</div>
+              ) : !experiments.length ? (
+                <div className="text-center text-xs text-slate-400 py-8">暂无实验记录，点击「AI挖掘策略」启动代码进化</div>
+              ) : experiments.map((e) => (
+                <div key={e.id} className="border border-slate-200 rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      e.status === 'succeeded' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : e.status === 'review_rejected' ? 'bg-orange-50 text-orange-700 border border-orange-200'
+                      : e.status === 'health_check_failed' ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                      : e.status === 'sandbox_rejected' ? 'bg-red-50 text-red-700 border border-red-200'
+                      : 'bg-slate-50 text-slate-600 border border-slate-200'
+                    }`}>
+                      {e.status === 'succeeded' ? '✓ 成功入库' : e.status === 'review_rejected' ? '评审团否决' : e.status === 'health_check_failed' ? '体检未过' : e.status === 'sandbox_rejected' ? '沙箱拦截' : e.status === 'backtest_failed' ? '回测崩溃' : '生成失败'}
+                    </span>
+                    <span className="text-[10px] text-slate-400">第 {e.round_idx} 轮 · {e.created_at}</span>
+                    {e.strategy_name && <span className="text-xs font-semibold text-slate-700">{e.strategy_name}</span>}
+                  </div>
+                  <p className="text-xs text-slate-500 line-clamp-1">设想: {e.user_idea}</p>
+                  {e.verdict && <p className="text-[11px] text-emerald-600 mt-1 line-clamp-2">{e.verdict}</p>}
+                  {e.fail_feedback && <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">失败原因: {e.fail_feedback}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ======================================================== */}
       {/* Modal: 策略档案与量化调优控制台 (已扩充尺寸并支持就地就近编辑) */}
       {/* ======================================================== */}

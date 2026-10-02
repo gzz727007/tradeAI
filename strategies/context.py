@@ -20,6 +20,8 @@ class PositionInfo:
     lowest_price: float = 0.0        # 买入以来的最低价
     entry_date: str = ""             # 初次建仓日期
     dynamic_target: Optional[Dict[str, Any]] = None  # 大模型赋予的个性化动态点位
+    last_price: float = 0.0          # 最后一次有行情的市价 (停牌/摘牌期间用于盯市估值)
+    missing_quote_days: int = 0      # 连续无行情交易日计数 (强赎/退市摘牌识别)
 
     @property
     def cost_basis(self) -> float:
@@ -142,6 +144,8 @@ class StrategyContext:
             pos.amount = new_amount
             pos.avg_price = new_avg
             pos.update_price_tracker(price)
+            pos.last_price = price
+            pos.missing_quote_days = 0
         else:
             self.positions[symbol] = PositionInfo(
                 symbol=symbol,
@@ -151,7 +155,8 @@ class StrategyContext:
                 highest_price=price,
                 lowest_price=price,
                 entry_date=self.current_date,
-                dynamic_target=self.dynamic_targets.get(symbol)
+                dynamic_target=self.dynamic_targets.get(symbol),
+                last_price=price
             )
 
         order = Order(
@@ -225,12 +230,41 @@ class StrategyContext:
         return order
 
     def get_market_value(self, price_map: Dict[str, float]) -> float:
-        """获取所有持仓当前市值"""
+        """获取所有持仓当前市值 (停牌期间按最后已知市价盯市，而非冻结在成本价)"""
         val = 0.0
         for s, pos in self.positions.items():
-            p = price_map.get(s, pos.avg_price)
+            p = price_map.get(s)
+            if p is None:
+                p = pos.last_price if pos.last_price > 0 else pos.avg_price
             val += pos.amount * p
         return val
+
+    def force_liquidate_stale(self, price_map: Dict[str, float], max_missing_days: int = 3) -> int:
+        """
+        停牌/摘牌持仓强制平仓巡检 (由回测引擎每个交易日驱动一次)。
+        转债触发强赎或到期退市后行情终止，若连续 max_missing_days 个交易日无行情，
+        视为已摘牌离场：按最后已知市价强制卖出回流现金 (扣除佣金与滑点)，
+        避免持仓被永久冻结在成本价导致净值失真。
+        :return: 本日强制平仓的标的数量
+        """
+        liquidated = 0
+        for sym in list(self.positions.keys()):
+            pos = self.positions.get(sym)
+            if pos is None:
+                continue
+            cur_price = price_map.get(sym)
+            if cur_price is not None:
+                pos.last_price = cur_price
+                pos.missing_quote_days = 0
+                continue
+            pos.missing_quote_days += 1
+            if pos.missing_quote_days >= max_missing_days:
+                last = pos.last_price if pos.last_price > 0 else pos.avg_price
+                if last > 0:
+                    self.sell(sym, last, reason="停牌/强赎摘牌强制平仓")
+                    if sym not in self.positions:
+                        liquidated += 1
+        return liquidated
 
     def get_total_assets(self, price_map: Dict[str, float]) -> float:
         """获取总资产 = 可用现金 + 持仓市值"""

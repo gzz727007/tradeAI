@@ -568,7 +568,9 @@ class DataLakeManager:
             "health_check": "全量数据湖完整性体检",
             "download_us_stock": "美股大盘与核心标的下载 (Yahoo Finance)",
             "download_etf": "核心 ETF 基金数据湖下载 (AkShare)",
-            "download_stock": "转债核心正股数据湖下载 (AkShare)"
+            "download_stock": "转债核心正股数据湖下载 (AkShare)",
+            "enrich_cb_events": "转债事件数据刷新 (下修/强赎日志 + 到期日回填)",
+            "enrich_cb_mv": "正股历史总市值抓取 (百度逐日序列)"
         }
         task_name = desc_map.get(action_type, action_type)
         if custom_symbols:
@@ -606,6 +608,10 @@ class DataLakeManager:
                 self._do_download_etf(custom_symbols)
             elif action_type == "download_stock":
                 self._do_download_stock(custom_symbols)
+            elif action_type == "enrich_cb_events":
+                self._do_enrich_cb_events()
+            elif action_type == "enrich_cb_mv":
+                self._do_enrich_cb_mv()
             else:
                 self._do_health_check()
 
@@ -619,6 +625,28 @@ class DataLakeManager:
             self.current_task["message"] = f"任务执行出错: {str(e)}"
             self.current_task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.current_task["logs"].append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 异常: {str(e)}")
+
+    def _do_enrich_cb_events(self):
+        """转债事件数据刷新: 下修/强赎日志抓取 + basic 到期日等字段回填 + 面板重富化"""
+        from core.data_lake.cb_lake import CBDataLake
+        lake = CBDataLake()
+        self._add_log("📡 正在抓取集思录下修与强赎/到期事件日志...")
+        self.current_task["progress"] = 30
+        result = lake.fetch_event_logs()
+        self._add_log(f"📥 下修事件 {len(result.get('revision', []))} 条, 强赎/到期事件 {len(result.get('redeem', []))} 条")
+        self.current_task["progress"] = 70
+        self._add_log("⚡ 正在重新富化日线面板 (剩余年限/正股动量/市值)...")
+        lake.enrich_daily_panel()
+
+    def _do_enrich_cb_mv(self):
+        """正股历史总市值抓取 (断点续传) + 面板重富化"""
+        from core.data_lake.cb_lake import CBDataLake
+        lake = CBDataLake()
+        self.current_task["progress"] = 20
+        lake.fetch_stock_market_cap_history(max_workers=4)
+        self.current_task["progress"] = 80
+        self._add_log("⚡ 正在重新富化日线面板...")
+        lake.enrich_daily_panel()
 
     def _do_incremental_sync(self):
         """增量更新行情"""

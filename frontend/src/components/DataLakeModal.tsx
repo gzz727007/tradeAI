@@ -665,6 +665,24 @@ export const DataLakeModal: React.FC<DataLakeModalProps> = ({ isOpen, onClose })
                                   <DownloadCloud className="w-3.5 h-3.5" />
                                   <span>{isReady ? '全量同步正股' : '🚀 下载转债正股'}</span>
                                 </button>
+                                <button
+                                  onClick={() => handleStartTask('enrich_cb_events')}
+                                  disabled={taskStatus?.status === 'running'}
+                                  title="抓取下修事件与强赎/到期日志，回填到期日、最后交易日等字段并重算剩余年限"
+                                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-semibold flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer shadow-xs"
+                                >
+                                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                                  <span>下修/强赎事件刷新</span>
+                                </button>
+                                <button
+                                  onClick={() => handleStartTask('enrich_cb_mv')}
+                                  disabled={taskStatus?.status === 'running'}
+                                  title="逐股抓取正股历史总市值 (百度，约3年窗口，断点续传)，供微盘/市值因子使用"
+                                  className="bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-semibold flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer shadow-xs"
+                                >
+                                  <DownloadCloud className="w-3.5 h-3.5" />
+                                  <span>正股市值历史</span>
+                                </button>
                               </div>
                             )}
                           </div>

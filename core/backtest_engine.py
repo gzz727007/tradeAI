@@ -49,8 +49,7 @@ class CBBacktestEngine:
             res = self._run_point_in_time_backtest()
             if res is not None:
                 return res
-            if self.mode == "real":
-                print("⚠️ 真实个券历史数据不足，降级执行因子特征模拟")
+            print("⚠️ 真实个券历史数据不足，auto/real 模式降级执行因子特征模拟 (指标带 is_simulated=True 标记)")
 
         # 2. 备用或快速推演引擎
         return self._run_factor_simulation()
@@ -144,6 +143,9 @@ class CBBacktestEngine:
                     # 驱动策略 on_bar (价格点随时买卖与追踪止盈)
                     strat.on_bar(context, day_quotes)
 
+                    # 停牌/摘牌持仓巡检: 连续 3 日无行情按最后市价强制平仓 (强赎/退市离场)
+                    context.force_liquidate_stale(price_map)
+
                     # 当日收盘盯市估值
                     end_total_assets = context.get_total_assets(price_map)
                     nav = end_total_assets / self.initial_capital
@@ -156,42 +158,62 @@ class CBBacktestEngine:
 
             # =========================================================
             # 经典截面轮动回测分支 (Periodic Rotation)
+            # 撮合规则：T 日收盘生成选券信号，T+1 个交易日按当日行情撮合成交，
+            # 规避"用当日收盘价选券又用同一价格成交"的前视偏差 (Look-ahead Bias)。
             # =========================================================
             cash = float(self.initial_capital)
             positions: Dict[str, Dict[str, Any]] = {}  # {symbol: {"amount": int, "avg_price": float}}
             strat_nav_series = []
-            
+            # 待执行的调仓信号: {"target_symbols": set, "weight_map": dict}
+            pending_signal: Optional[Dict[str, Any]] = None
+
             for t_idx, current_date in enumerate(trade_dates):
                 day_quotes = grouped_by_date.get(current_date, pd.DataFrame())
                 if day_quotes.empty:
                     strat_nav_series.append(strat_nav_series[-1] if strat_nav_series else 1.0)
                     continue
-                    
+
                 price_map = dict(zip(day_quotes["symbol"], day_quotes["price"]))
-                
-                # 调仓触发判断 (每隔 rebalance_interval_days 或 首个交易日)
-                is_rebalance_day = (t_idx % self.rebalance_interval_days == 0)
-                
-                if is_rebalance_day:
-                    # 1. 真实运行策略的选券逻辑
-                    selected_df = strat.select_portfolio(current_date, day_quotes)
-                    target_symbols = set(selected_df["bond_code"].tolist()) if not selected_df.empty else set()
-                    
-                    # 2. 卖出不在目标池中的标的 (扣除手续费与滑点)
+
+                # ---- 步骤 0: 停牌/摘牌持仓巡检 ----
+                # 转债强赎或到期退市后行情终止：连续 3 个交易日无行情视为已摘牌离场，
+                # 按最后已知市价强制平仓回流现金 (扣除交易成本)，避免持仓永久冻结导致净值失真。
+                for sym in list(positions.keys()):
+                    pos = positions[sym]
+                    cur_price = price_map.get(sym)
+                    if cur_price is not None:
+                        pos["last_price"] = cur_price
+                        pos["no_quote_days"] = 0
+                    else:
+                        pos["no_quote_days"] = pos.get("no_quote_days", 0) + 1
+                        if pos["no_quote_days"] >= 3:
+                            last = pos.get("last_price", pos["avg_price"])
+                            sell_val = pos["amount"] * last
+                            cost = sell_val * (self.commission_rate + self.slippage_rate)
+                            cash += (sell_val - cost)
+                            del positions[sym]
+
+                # ---- 步骤 1: 撮合上一交易日收盘生成的调仓信号 (T+1 成交) ----
+                if pending_signal is not None:
+                    target_symbols = pending_signal["target_symbols"]
+                    weight_map = pending_signal["weight_map"]
+
+                    # 卖出不在目标池中的标的 (T+1 停牌无行情的顺延至下轮调仓再尝试)
                     for sym in list(positions.keys()):
                         if sym not in target_symbols:
-                            cur_price = price_map.get(sym, positions[sym]["avg_price"])
+                            cur_price = price_map.get(sym)
+                            if cur_price is None:
+                                continue
                             sell_val = positions[sym]["amount"] * cur_price
                             cost = sell_val * (self.commission_rate + self.slippage_rate)
                             cash += (sell_val - cost)
                             del positions[sym]
-                            
-                    # 3. 计算当前总资产，等权或按权重买入新标的
-                    current_market_val = sum(pos["amount"] * price_map.get(s, pos["avg_price"]) for s, pos in positions.items())
+
+                    # 按权重买入新标的 (T+1 停牌的标的自动跳过)
+                    current_market_val = sum(pos["amount"] * price_map.get(s, pos.get("last_price", pos["avg_price"])) for s, pos in positions.items())
                     total_assets = cash + current_market_val
-                    
-                    if target_symbols and not selected_df.empty:
-                        weight_map = dict(zip(selected_df["bond_code"], selected_df.get("weight", [1.0/len(target_symbols)]*len(target_symbols))))
+
+                    if target_symbols:
                         for sym in target_symbols:
                             if sym not in positions:
                                 target_w = weight_map.get(sym, 1.0 / len(target_symbols))
@@ -205,14 +227,31 @@ class CBBacktestEngine:
                                         cost = buy_val * (self.commission_rate + self.slippage_rate)
                                         if cash >= (buy_val + cost):
                                             cash -= (buy_val + cost)
-                                            positions[sym] = {"amount": target_amount, "avg_price": cur_price}
+                                            positions[sym] = {
+                                                "amount": target_amount,
+                                                "avg_price": cur_price,
+                                                "last_price": cur_price,
+                                                "no_quote_days": 0
+                                            }
+                    pending_signal = None
 
-                # 4. 当日收盘盯市估值 (Mark-to-Market)
-                end_market_val = sum(pos["amount"] * price_map.get(s, pos["avg_price"]) for s, pos in positions.items())
+                # ---- 步骤 2: 今日收盘生成新调仓信号 (顺延至下一交易日撮合) ----
+                if t_idx % self.rebalance_interval_days == 0:
+                    selected_df = strat.select_portfolio(current_date, day_quotes)
+                    target_symbols = set(selected_df["bond_code"].tolist()) if not selected_df.empty else set()
+                    if not selected_df.empty and target_symbols:
+                        default_w = [1.0 / len(target_symbols)] * len(selected_df)
+                        weight_map = dict(zip(selected_df["bond_code"], selected_df.get("weight", default_w)))
+                    else:
+                        weight_map = {}
+                    pending_signal = {"target_symbols": target_symbols, "weight_map": weight_map}
+
+                # ---- 步骤 3: 当日收盘盯市估值 (Mark-to-Market，停牌按最后市价) ----
+                end_market_val = sum(pos["amount"] * price_map.get(s, pos.get("last_price", pos["avg_price"])) for s, pos in positions.items())
                 end_total_assets = cash + end_market_val
                 nav = end_total_assets / self.initial_capital
                 strat_nav_series.append(round(float(nav), 4))
-                
+
             nav_dict[strat.name] = strat_nav_series
             
         # 组装返回结果
@@ -222,16 +261,19 @@ class CBBacktestEngine:
         metrics_summary = {}
         for col in nav_df.columns:
             metrics_summary[col] = QuantMetrics.calculate_performance(nav_df[col])
-            
+            metrics_summary[col]["is_simulated"] = False  # 真实历史个券截面撮合结果
+
         drawdown_df = pd.DataFrame(index=trade_dates)
         for col in nav_df.columns:
             drawdown_df[col] = QuantMetrics.calculate_drawdown_series(nav_df[col])
-            
+
         return nav_df, metrics_summary, drawdown_df
 
     def _run_factor_simulation(self) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]], pd.DataFrame]:
         """
         因子特征推演引擎 (基于真实基准行情的快速模拟)
+        ⚠️ 注意：本引擎的净值曲线由预设 alpha/beta/噪声参数合成，并非真实撮合结果，
+        仅用于快速风格试算，所有指标均带 is_simulated=True 标记，前端必须显著提示。
         """
         print(f"⚡ 执行【因子特征推演回测】 ({self.start_date} ~ {self.end_date})...")
 
@@ -297,9 +339,16 @@ class CBBacktestEngine:
         metrics_summary = {}
         for col in nav_df.columns:
             metrics_summary[col] = QuantMetrics.calculate_performance(nav_df[col])
+            if col != "中证转债基准":
+                # 基准列为真实指数行情，策略列为参数合成的模拟净值
+                metrics_summary[col]["is_simulated"] = True
+            else:
+                metrics_summary[col]["is_simulated"] = False
 
         drawdown_df = pd.DataFrame(index=dates)
         for col in nav_df.columns:
             drawdown_df[col] = QuantMetrics.calculate_drawdown_series(nav_df[col])
+
+        print("⚠️ [警告] 当前展示的为【因子特征推演】模拟净值 (非真实撮合结果)，指标仅供参考！")
 
         return nav_df, metrics_summary, drawdown_df

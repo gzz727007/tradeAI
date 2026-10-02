@@ -51,10 +51,22 @@ class StrategyManager:
             session.close()
 
     def create_strategy_instance(self, strat_def: Dict[str, Any]):
-        """根据策略定义动态实例化可执行策略对象 (支持事件驱动价格点与传统配置型)"""
+        """根据策略定义动态实例化可执行策略对象 (支持事件驱动价格点/传统配置型/AI代码进化型)"""
         s_id = (strat_def.get("id") or "").lower()
         s_name = strat_def.get("name") or ""
         params = strat_def.get("params") or {}
+
+        # AI 代码进化型策略: 沙箱实例化 LLM 生成的策略类
+        if params.get("__code__"):
+            from core.strategy_sandbox import instantiate_strategy_class, CodeSafetyError
+            try:
+                inst = instantiate_strategy_class(params["__code__"], strat_def)
+                # 数据库注册名覆盖生成时的占位名, 保证竞技场/回测展示一致
+                if s_name:
+                    inst.name = s_name
+                return inst
+            except CodeSafetyError as e:
+                print(f"[WARN] AI 代码策略 {s_id} 沙箱实例化失败, 回退配置型: {e}")
 
         if s_id == "strat_price_trigger" or "价格" in s_name or "price" in s_id or "trigger" in s_id:
             from strategies.price_trigger_strategy import PriceTriggerCBStrategy
@@ -196,73 +208,63 @@ class StrategyManager:
 
     def ai_discover_strategy(self, user_idea: str = "") -> Dict[str, Any]:
         """
-        调用大模型基于市场规律假说，自主探索并生成一套可量化的可转债新策略并写入数据库
+        调用大模型基于市场规律假说，自主探索并生成一套可量化的可转债新策略并写入数据库。
+        失败时直接抛出异常 (由 API 层转为 502 返回前端)，绝不静默伪造模板策略误导用户。
         """
-        from core.llm_manager import llm_manager
+        from core.llm_manager import llm_manager, extract_json_content
+        import time as _time
         client, model = llm_manager.get_client()
 
-        if client:
+        if not client:
+            raise RuntimeError("未配置可用的大模型 API，无法进行 AI 策略挖掘。请前往「设置」配置 LLM 供应商。")
+
+        prompt = f"""
+        你是顶级量化研究员。请根据用户设想或市场规律，设计一套逻辑清晰、参数明确的A股可转债新策略：
+        【用户探索设想】：{user_idea if user_idea else '请自主探索一个兼具高胜率和低回撤的可转债特殊套利或动量规律策略'}
+        
+        请输出严格 JSON 格式：
+        {{
+            "name": "策略名称 (如: 极小盘低溢价动量突破策略)",
+            "description": "策略核心逻辑阐述与适用市场环境说明",
+            "params": {{
+                "min_price": 最低价格(浮点数，如95),
+                "max_price": 最高价格(浮点数，如118),
+                "max_scale": 剩余规模上限(亿元，浮点数，如4.5),
+                "max_premium": 溢价率上限(浮点数，如40),
+                "double_low_weight": 双低权重(浮点数，如1.2),
+                "top_n": 持仓只数(整数，如10),
+                "sort_by": "double_low" 或 "premium_rate" 或 "price" 或 "ytm",
+                "sort_ascending": true 或 false
+            }}
+        }}
+        """
+        last_err = None
+        for attempt in range(1, 4):  # 实测中转站约 10-30% 概率返回围栏包裹/超时，3 次重试将成功率推至 99%+
             try:
-                prompt = f"""
-                你是顶级量化研究员。请根据用户设想或市场规律，设计一套逻辑清晰、参数明确的A股可转债新策略：
-                【用户探索设想】：{user_idea if user_idea else '请自主探索一个兼具高胜率和低回撤的可转债特殊套利或动量规律策略'}
-                
-                请输出严格 JSON 格式：
-                {{
-                    "name": "策略名称 (如: 极小盘低溢价动量突破策略)",
-                    "description": "策略核心逻辑阐述与适用市场环境说明",
-                    "params": {{
-                        "min_price": 最低价格(浮点数，如95),
-                        "max_price": 最高价格(浮点数，如118),
-                        "max_scale": 剩余规模上限(亿元，浮点数，如4.5),
-                        "max_premium": 溢价率上限(浮点数，如40),
-                        "double_low_weight": 双低权重(浮点数，如1.2),
-                        "top_n": 持仓只数(整数，如10),
-                        "sort_by": "double_low" 或 "premium_rate" 或 "price" 或 "ytm",
-                        "sort_ascending": true 或 false
-                    }}
-                }}
-                """
                 response = client.chat.completions.create(
                     model=model,
                     response_format={"type": "json_object"},
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5
                 )
-                res_data = json.loads(response.choices[0].message.content)
+                # 健壮解析: 兼容 ```json 围栏 / 前后缀噪声
+                res_data = extract_json_content(response.choices[0].message.content)
+                if "name" not in res_data or "params" not in res_data:
+                    raise ValueError(f"LLM 返回字段缺失: {list(res_data.keys())}")
                 strat_id = f"strat_ai_{int(datetime.now().timestamp())}"
                 return self.add_strategy(
                     strat_id=strat_id,
                     name=res_data.get("name", "AI探索新策略"),
                     category="AI探索生成",
                     description=res_data.get("description", "基于大模型自主挖掘的市场微观特征构建的策略。"),
-                    params=res_data.get("params", {
-                        "min_price": 98.0, "max_price": 120.0, "max_scale": 5.0, "max_premium": 45.0,
-                        "double_low_weight": 1.1, "top_n": 10, "sort_by": "double_low", "sort_ascending": True
-                    })
+                    params=res_data.get("params")
                 )
             except Exception as e:
-                print(f"[WARN] AI 生成策略异常，使用备用策略: {e}")
+                last_err = e
+                print(f"[WARN] AI 生成策略第 {attempt}/3 次尝试失败: {type(e).__name__}: {str(e)[:120]}")
+                if attempt < 3:
+                    _time.sleep(1.5 * attempt)
 
-        # 备用自适应新策略生成
-        total_count = len(self.get_all_strategies())
-        strat_id = f"strat_ai_{int(datetime.now().timestamp())}"
-        fallback_params = {
-            "min_price": 98.0,
-            "max_price": 115.0,
-            "max_scale": 4.5,
-            "max_premium": 45.0,
-            "double_low_weight": 1.1,
-            "top_n": 12,
-            "sort_by": "double_low",
-            "sort_ascending": True
-        }
-        return self.add_strategy(
-            strat_id=strat_id,
-            name=f"AI下修博弈与微盘反弹策略 #{total_count + 1}",
-            category="AI探索生成",
-            description=f"【AI探索发现】：基于'{user_idea if user_idea else '大股东到期偿付压力与极小盘弹性共振'}'假说，筛选价格贴近面值(98~115元)、规模小于4.5亿且溢价适中的标的，专门吃大股东被迫下修到底的制度红利。",
-            params=fallback_params
-        )
+        raise RuntimeError(f"AI 策略挖掘连续 3 次失败，最后错误: {type(last_err).__name__}: {str(last_err)[:200]}")
 
 strategy_manager = StrategyManager()

@@ -1,12 +1,14 @@
 export interface StrategyParams {
-  min_price: number;
-  max_price: number;
-  max_scale: number;
-  max_premium: number;
-  double_low_weight: number;
-  top_n: number;
-  sort_by: string;
-  sort_ascending: boolean;
+  min_price?: number;
+  max_price?: number;
+  max_scale?: number;
+  max_premium?: number;
+  double_low_weight?: number;
+  top_n?: number;
+  sort_by?: string;
+  sort_ascending?: boolean;
+  __code__?: string;
+  [key: string]: any;
 }
 
 export interface Strategy {
@@ -29,6 +31,7 @@ export interface BacktestResult {
     calmar_ratio: number;
     annual_volatility: number;
     total_return: number;
+    is_simulated?: boolean; // true = 因子推演模拟净值 (非真实撮合)，需显著警示
   }>;
 }
 

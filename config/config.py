@@ -34,6 +34,12 @@ class SystemConfig:
     # 消息通知
     FEISHU_WEBHOOK_URL: str = os.getenv("FEISHU_WEBHOOK_URL", "")
     SERVERCHAN_KEY: str = os.getenv("SERVERCHAN_KEY", "")
+
+    # API 访问安全
+    # 留空 = 本地模式不鉴权 (默认)；设置后所有 /api/* 与 WebSocket 请求必须携带 X-API-Token (WS 可用 ?token=)
+    API_TOKEN: str = os.getenv("API_TOKEN", "")
+    # 允许的跨域来源 (逗号分隔)。生产环境 SPA 与后端同源部署，通常无需跨域
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
     
     # 可转债量化默认参数
     DEFAULT_DOUBLE_LOW_WEIGHT: float = 1.0  # 双低 = 价格 + 溢价率 * 100 * weight
@@ -45,5 +51,18 @@ class SystemConfig:
     # 交易摩擦
     COMMISSION_RATE: float = 0.00005        # 券商佣金 万0.5
     SLIPPAGE_RATE: float = 0.001            # 滑点 0.1%
+
+    # ===== AI 交易委员会 (约束式定价与全自动执行) =====
+    COMMITTEE_ENABLED: bool = os.getenv("COMMITTEE_ENABLED", "true").lower() == "true"
+    COMMITTEE_AUTO_EXECUTE: bool = os.getenv("COMMITTEE_AUTO_EXECUTE", "false").lower() == "true"
+    # 约束式定价硬边界 (以昨收为锚，AI 只能在区间内选位，防幻觉)
+    COMMITTEE_BUY_CAP_PCT: float = 0.02     # 买入限价上限: 昨收 × (1 + 2%)
+    COMMITTEE_BUY_FLOOR_PCT: float = -0.02  # 买入限价下限: 昨收 × (1 - 2%)
+    COMMITTEE_SELL_FLOOR_PCT: float = -0.02 # 卖出限价下限: 昨收 × (1 - 2%) (不允许恶意砸盘价)
+    COMMITTEE_SELL_CAP_PCT: float = 0.08    # 卖出限价上限: 昨收 × (1 + 8%) (止盈价封顶防离谱)
+    # 盘中节奏
+    COMMITTEE_REFRESH_MINUTES: int = 30     # 每 30 分钟刷新一次计划价格状态
+    COMMITTEE_MIDDAY_TIME: str = "11:35"    # 午间复检时间
+    COMMITTEE_GATE_TIME: str = "09:15"      # 盘前准入时间
 
 settings = SystemConfig()

@@ -5,10 +5,12 @@
 """
 
 import json
+import time
+from functools import partial
 from typing import Dict, Any, List
 from config.config import settings
 from core.state import BondCandidate, EquityMomentumResult
-from core.llm_manager import llm_manager
+from core.llm_manager import llm_manager, extract_json_content
 
 class EquityAnalystAgent:
     """正股动量与题材 Agent"""
@@ -17,7 +19,8 @@ class EquityAnalystAgent:
         self.client, self.model, self.provider, self.provider_name = llm_manager.get_client_with_provider(preferred="gemini")
         self.role_name = "正股动量分析师"
 
-    def evaluate_bond(self, candidate: BondCandidate) -> EquityMomentumResult:
+    def evaluate_bond(self, candidate: BondCandidate, require_llm: bool = False) -> EquityMomentumResult:
+        """require_llm=True (委员会严格模式): LLM 未配置或重试后仍失败时抛出异常，不走启发式兜底"""
         stock_name = candidate["stock_name"]
         code = candidate["bond_code"]
         premium = candidate["premium_rate"]
@@ -30,37 +33,45 @@ class EquityAnalystAgent:
         if not client:
             client, model = llm_manager.get_client()
 
-        if client:
-            try:
-                prompt = f"""
-                你是可转债投研团队的【正股与题材分析师】。请分析以下正股所属板块与当前进攻动量：
-                【正股名称】：{stock_name}
-                【转债溢价率】：{premium}%
-                
-                请输出严格 JSON 格式：
-                {{
-                    "momentum_score": 弹性评分(0~100整数),
-                    "sector_themes": ["概念1", "概念2"],
-                    "catalyst_summary": "一句话题材催化剂或正股动量逻辑"
-                }}
-                """
-                response = client.chat.completions.create(
-                    model=model,
-                    response_format={"type": "json_object"},
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3
-                )
-                data = json.loads(response.choices[0].message.content)
-                return {
-                    "bond_code": code,
-                    "momentum_score": float(data.get("momentum_score", base_elasticity)),
-                    "sector_themes": data.get("sector_themes", ["高端制造", "成长动量"]),
-                    "catalyst_summary": data.get("catalyst_summary", f"正股 {stock_name} 动量传导良好。")
-                }
-            except Exception:
-                pass
+        if not client and require_llm:
+            raise RuntimeError("LLM 未配置，无法完成动量审查")
 
-        # 兜底启发式评分
+        if client:
+            last_err = None
+            for attempt in range(3):
+                try:
+                    prompt = f"""
+                    你是可转债投研团队的【正股与题材分析师】。请分析以下正股所属板块与当前进攻动量：
+                    【正股名称】：{stock_name}
+                    【转债溢价率】：{premium}%
+                    
+                    请输出严格 JSON 格式：
+                    {{
+                        "momentum_score": 弹性评分(0~100整数),
+                        "sector_themes": ["概念1", "概念2"],
+                        "catalyst_summary": "一句话题材催化剂或正股动量逻辑"
+                    }}
+                    """
+                    response = client.chat.completions.create(
+                        model=model,
+                        response_format={"type": "json_object"},
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3
+                    )
+                    data = extract_json_content(response.choices[0].message.content)
+                    return {
+                        "bond_code": code,
+                        "momentum_score": float(data.get("momentum_score", base_elasticity)),
+                        "sector_themes": data.get("sector_themes", ["高端制造", "成长动量"]),
+                        "catalyst_summary": data.get("catalyst_summary", f"正股 {stock_name} 动量传导良好。")
+                    }
+                except Exception as e:
+                    last_err = e
+                    time.sleep(1.0 + attempt)
+            if require_llm:
+                raise RuntimeError(f"动量审查 LLM 调用失败(已重试3次): {last_err}")
+
+        # 兜底启发式评分 (仅会诊室等非严格场景)
         score = base_elasticity if base_elasticity > 30 else 45
         return {
             "bond_code": code,
@@ -69,5 +80,7 @@ class EquityAnalystAgent:
             "catalyst_summary": f"转股溢价率仅为 {premium}%，若正股 {stock_name} 爆发，转债具备强爆发弹性。"
         }
 
-    def batch_evaluate(self, candidates: List[BondCandidate]) -> Dict[str, EquityMomentumResult]:
-        return {c["bond_code"]: self.evaluate_bond(c) for c in candidates}
+    def batch_evaluate(self, candidates: List[BondCandidate], require_llm: bool = False) -> Dict[str, EquityMomentumResult]:
+        """批量评估候选池 (线程池并发调用 LLM，单只失败不影响整批; require_llm=True 时失败的标的缺失结果)"""
+        from core.llm_manager import parallel_batch_map
+        return parallel_batch_map(partial(self.evaluate_bond, require_llm=require_llm), candidates)

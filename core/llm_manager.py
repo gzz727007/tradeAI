@@ -6,7 +6,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional
 from dotenv import set_key, load_dotenv
 from config.config import settings, BASE_DIR
 
@@ -302,5 +302,76 @@ class LLMManager:
         """
         client, model, _, _ = self.get_client_with_provider(preferred)
         return client, model
+
+
+def extract_json_content(text: Any) -> Any:
+    """
+    从 LLM 返回文本中健壮地提取 JSON 对象。
+    实测部分供应商/中转站会间歇性无视 response_format=json_object，把 JSON 包在
+    Markdown 围栏 (```json ... ```) 里，甚至前后附带说明文字，裸 json.loads 会炸。
+    处理顺序: 直接解析 -> 剥围栏 -> 截取首个 { 到最后一个 } 之间的内容。
+    :raises json.JSONDecodeError: 确实无法提取出合法 JSON 时抛出
+    """
+    import json as _json
+    import re as _re
+
+    if text is None:
+        raise _json.JSONDecodeError("LLM 返回内容为空", "", 0)
+    raw = str(text).strip()
+    if not raw:
+        raise _json.JSONDecodeError("LLM 返回内容为空", "", 0)
+
+    # 1. 直接解析
+    try:
+        return _json.loads(raw)
+    except _json.JSONDecodeError:
+        pass
+
+    # 2. 剥离 Markdown 围栏 (```json ... ``` 或 ``` ... ```)
+    fence_match = _re.search(r"```(?:json)?\s*(.*?)```", raw, _re.DOTALL)
+    if fence_match:
+        try:
+            return _json.loads(fence_match.group(1).strip())
+        except _json.JSONDecodeError:
+            pass
+
+    # 3. 截取首个 { 到最后一个 } 之间的内容
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
+        return _json.loads(raw[start:end + 1])
+
+    raise _json.JSONDecodeError("无法从 LLM 返回中提取 JSON", raw[:60], 0)
+
+
+def parallel_batch_map(evaluate_fn, items: List[Any], max_workers: int = 4) -> Dict[str, Any]:
+    """
+    多智能体通用的批量评估并行执行器。
+    将逐只串行的 LLM 调用改为线程池并发，单只失败不影响整批 (自动兜底由 evaluate_fn 自身负责)。
+    :param evaluate_fn: 单只评估函数，入参 candidate，返回含 bond_code 键的 dict
+    :param items: 候选标的列表
+    :param max_workers: 并发线程数 (默认 4，兼顾供应商限流)
+    :return: {bond_code: 评估结果dict}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: Dict[str, Any] = {}
+    if not items:
+        return results
+
+    def _safe_eval(item):
+        try:
+            return evaluate_fn(item)
+        except Exception as e:
+            code = item.get("bond_code", "UNKNOWN") if isinstance(item, dict) else "UNKNOWN"
+            print(f"[WARN] 并行评估 {code} 异常 (使用兜底): {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        futures = {pool.submit(_safe_eval, c): c for c in items}
+        for fut in as_completed(futures):
+            r = fut.result()
+            if r and "bond_code" in r:
+                results[r["bond_code"]] = r
+    return results
 
 llm_manager = LLMManager()

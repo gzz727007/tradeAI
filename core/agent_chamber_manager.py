@@ -178,36 +178,44 @@ class AgentChamberManager:
 
         now_str = datetime.now().strftime("%H:%M:%S")
 
-        for idx, cand in enumerate(candidates):
-            b_code = cand["bond_code"]
-            b_name = cand["bond_name"]
-            speeches: List[Dict[str, Any]] = []
+        # 逐券并行评估：每只券内部串行执行信用/正股/条款三方会诊，
+        # 券与券之间通过线程池并发 (N 只券 × 3 次 LLM 从全串行 → 约 1/4 时长)。
+        from core.llm_manager import parallel_batch_map
 
-            # 1. 首席信用风控官 (cb_credit)
-            credit_agent = agents_map.get("cb_credit")
-            credit_result = cls._evaluate_cb_credit(cand, credit_agent)
-            credit_reviews[b_code] = credit_result["review"]
+        def _evaluate_one_bond(cand: BondCandidate) -> Dict[str, Any]:
+            speeches: List[Dict[str, Any]] = []
+            credit_result = cls._evaluate_cb_credit(cand, agents_map.get("cb_credit"))
             speeches.append(credit_result["speech"])
-            if credit_result["review"]["risk_level"] == "VETO":
+            equity_result = cls._evaluate_cb_equity(cand, agents_map.get("cb_equity"))
+            speeches.append(equity_result["speech"])
+            clause_result = cls._evaluate_cb_clause(cand, agents_map.get("cb_clause"))
+            speeches.append(clause_result["speech"])
+            return {
+                "bond_code": cand["bond_code"],
+                "bond_name": cand["bond_name"],
+                "credit": credit_result,
+                "equity": equity_result,
+                "clause": clause_result,
+                "speeches": speeches
+            }
+
+        bond_results = parallel_batch_map(_evaluate_one_bond, candidates)
+
+        for cand in candidates:
+            b_code = cand["bond_code"]
+            r = bond_results.get(b_code)
+            if not r:
+                continue
+            credit_reviews[b_code] = r["credit"]["review"]
+            equity_reviews[b_code] = r["equity"]["review"]
+            clause_reviews[b_code] = r["clause"]["review"]
+            all_bond_speeches[b_code] = r["speeches"]
+            if r["credit"]["review"]["risk_level"] == "VETO":
                 vetoed_bonds.append({
                     "bond_code": b_code,
-                    "bond_name": b_name,
-                    "reason": credit_result["review"]["reason"]
+                    "bond_name": r["bond_name"],
+                    "reason": r["credit"]["review"]["reason"]
                 })
-
-            # 2. 正股动量分析师 (cb_equity)
-            equity_agent = agents_map.get("cb_equity")
-            equity_result = cls._evaluate_cb_equity(cand, equity_agent)
-            equity_reviews[b_code] = equity_result["review"]
-            speeches.append(equity_result["speech"])
-
-            # 3. 条款博弈专家 (cb_clause)
-            clause_agent = agents_map.get("cb_clause")
-            clause_result = cls._evaluate_cb_clause(cand, clause_agent)
-            clause_reviews[b_code] = clause_result["review"]
-            speeches.append(clause_result["speech"])
-
-            all_bond_speeches[b_code] = speeches
 
         # 4. 投资总监 (PM) 综合裁决与仓位分配
         from agents.portfolio_manager import PortfolioManagerAgent
@@ -289,36 +297,36 @@ class AgentChamberManager:
         vetoed_bonds: List[Dict[str, Any]] = []
         now_str = datetime.now().strftime("%H:%M:%S")
 
-        for idx, cand in enumerate(candidates):
+        # 逐券并行审理：每只券内部串行进行控辩审三轮交锋，券与券之间线程池并发
+        from core.llm_manager import parallel_batch_map
+
+        def _try_one_bond(cand: BondCandidate) -> Dict[str, Any]:
+            speeches: List[Dict[str, Any]] = []
+            prosecutor_speech = cls._court_bear_prosecution(cand, bear_agent)
+            speeches.append(prosecutor_speech)
+            defender_speech = cls._court_bull_defense(cand, bull_agent, prosecutor_speech["statement"])
+            speeches.append(defender_speech)
+            judge_speech, verdict_data = cls._court_judge_ruling(cand, judge_agent, prosecutor_speech, defender_speech)
+            speeches.append(judge_speech)
+            return {
+                "bond_code": cand["bond_code"],
+                "speeches": speeches,
+                "verdict": verdict_data
+            }
+
+        bond_results = parallel_batch_map(_try_one_bond, candidates)
+
+        for cand in candidates:
             b_code = cand["bond_code"]
             b_name = cand["bond_name"]
             price = cand["price"]
-            premium = cand["premium_rate"]
             dlow = cand["double_low"]
-            stock_name = cand["stock_name"]
-            rating = cand.get("rating", "AA")
+            r = bond_results.get(b_code)
+            if not r:
+                continue
 
-            speeches: List[Dict[str, Any]] = []
-
-            # ---------------------------------------------------------
-            # 控方回合：做空公诉人起诉指控
-            # ---------------------------------------------------------
-            prosecutor_speech = cls._court_bear_prosecution(cand, bear_agent)
-            speeches.append(prosecutor_speech)
-
-            # ---------------------------------------------------------
-            # 辩方回合：多头律师有力抗辩
-            # ---------------------------------------------------------
-            defender_speech = cls._court_bull_defense(cand, bull_agent, prosecutor_speech["statement"])
-            speeches.append(defender_speech)
-
-            # ---------------------------------------------------------
-            # 审理裁决：主审大法官终审宣判
-            # ---------------------------------------------------------
-            judge_speech, verdict_data = cls._court_judge_ruling(cand, judge_agent, prosecutor_speech, defender_speech)
-            speeches.append(judge_speech)
-
-            all_bond_speeches[b_code] = speeches
+            all_bond_speeches[b_code] = r["speeches"]
+            verdict_data = r["verdict"]
             court_verdicts[b_code] = verdict_data
 
             if verdict_data["verdict"] == "REJECT":

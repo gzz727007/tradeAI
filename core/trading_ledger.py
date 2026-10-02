@@ -536,20 +536,52 @@ class TradingLedger:
             if code:
                 price_map[code] = float(row.get("price", row.get("close", 100.0)))
 
+        # ===== AI 交易委员会: 准入过滤 + 限价执行 =====
+        # 有当日委员会结论时: 否决标的禁止交易(持仓被清)、观察标的禁止新买入、
+        # 所有成交严格按委员会限价撮合 (现价越界则挂单等待，不追价)
+        plan_map: Dict[str, Dict[str, Any]] = {}
+        decision_map: Dict[str, str] = {}
+        try:
+            from core.trading_committee import committee
+            plan_map = committee.get_plan_map(today_str)
+            decision_map = committee.get_decision_map(today_str)
+        except Exception as e:
+            print(f"[WARN] 委员会计划不可用，本次按普通市价调仓: {e}")
+
+        if decision_map:
+            before_count = len(target_symbols)
+            target_symbols = [s for s in target_symbols if decision_map.get(s) != "reject"]
+            if len(target_symbols) != before_count:
+                print(f"[委员会] 准入过滤: 候选 {before_count} → {len(target_symbols)} 只 (剔除否决标的)")
+            target_names = {k: v for k, v in target_names.items() if k in target_symbols}
+
         # 1. 查找持仓并卖出不在选券池中的标的
         session = SessionLocal()
         sells_to_do = []
+        sells_pending = []
         try:
             positions = session.query(Position).filter(Position.account_id == account_id).all()
             for p in positions:
                 if p.symbol not in target_symbols:
-                    p_price = price_map.get(p.symbol, p.avg_price)
+                    plan = plan_map.get(p.symbol, {})
+                    sell_limit = plan.get("sell_limit_price")
+                    market_p = price_map.get(p.symbol, p.avg_price)
+                    if sell_limit and market_p < float(sell_limit) * 0.999:
+                        # 现价低于 AI 卖出限价: 挂单等待成交，不砸盘
+                        sells_pending.append({
+                            "symbol": p.symbol, "name": p.name,
+                            "limit_price": float(sell_limit), "market_price": market_p,
+                            "reason": "【AI委员会】现价低于卖出限价，挂单等待成交"
+                        })
+                        continue
+                    p_price = float(sell_limit) if sell_limit else market_p
+                    p_tag = "【AI委员会限价】" if sell_limit else ""
                     sells_to_do.append({
                         "symbol": p.symbol,
                         "name": p.name,
                         "price": p_price,
                         "amount": p.amount,
-                        "reason": f"【{strat.name}】轮动调出：移出精选标的池"
+                        "reason": f"{p_tag}【{strat.name}】轮动调出：移出精选标的池"
                     })
         finally:
             session.close()
@@ -560,6 +592,7 @@ class TradingLedger:
         # 2. 重新统计可用资产并按策略配置买入新标的
         session = SessionLocal()
         buys_done = []
+        buys_pending = []
         try:
             acc = session.query(Account).filter(Account.id == account_id).first()
             current_positions = session.query(Position).filter(Position.account_id == account_id).all()
@@ -576,8 +609,26 @@ class TradingLedger:
                 if sym in cur_pos_map:
                     continue  # 已持有
 
-                cur_p = price_map.get(sym, 100.0)
+                # 委员会观察标的: 禁止新买入 (可继续持有)
+                if decision_map.get(sym) == "watch":
+                    print(f"[委员会] {sym} 为观察标的，禁止新买入，跳过")
+                    continue
+
+                plan = plan_map.get(sym, {})
+                buy_limit = plan.get("buy_limit_price")
+                market_p = price_map.get(sym, 100.0)
                 bond_name = target_names.get(sym, sym)
+
+                # 现价高于 AI 买入限价: 挂单等待，不追价
+                if buy_limit and market_p > float(buy_limit) * 1.001:
+                    buys_pending.append({
+                        "symbol": sym, "name": bond_name,
+                        "limit_price": float(buy_limit), "market_price": market_p,
+                        "reason": "【AI委员会】现价高于买入限价，挂单等待成交"
+                    })
+                    continue
+
+                cur_p = float(buy_limit) if buy_limit else market_p
                 # 计算手(1手10张)
                 target_amount = int((target_per_bond / cur_p) // 10 * 10)
                 if target_amount < 10:
@@ -588,7 +639,8 @@ class TradingLedger:
                     target_amount = int((acc.available_cash * 0.9 / cur_p) // 10 * 10)
 
                 if target_amount >= 10 and acc.available_cash >= (target_amount * cur_p):
-                    buy_reason = f"【{strat.name}】调仓买入：选券综合评分第{rank}名"
+                    p_tag = "【AI委员会限价】" if buy_limit else ""
+                    buy_reason = f"{p_tag}【{strat.name}】调仓买入：选券综合评分第{rank}名"
                     ok = self.record_buy(account_id, sym, bond_name, cur_p, target_amount, reason=buy_reason)
                     if ok:
                         buys_done.append({
@@ -613,7 +665,10 @@ class TradingLedger:
             "sold_count": len(sells_to_do),
             "bought_count": len(buys_done),
             "sells": sells_to_do,
-            "buys": buys_done
+            "buys": buys_done,
+            "pending_buys": buys_pending,
+            "pending_sells": sells_pending,
+            "committee_mode": bool(decision_map)
         }
 
     def get_account_nav_history(self, account_id: str) -> Optional[Dict[str, Any]]:
