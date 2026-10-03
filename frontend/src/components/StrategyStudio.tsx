@@ -63,6 +63,14 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
   const [newStratTopN, setNewStratTopN] = useState(15);
   const [newStratSortBy, setNewStratSortBy] = useState('double_low');
 
+  // 三步向导: 意图 → 参数(手动/AI生成) → 回测验证
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
+  const [wizardMode, setWizardMode] = useState<'manual' | 'ai'>('manual');
+  const [wizardError, setWizardError] = useState('');
+  const [wizardCreatedId, setWizardCreatedId] = useState(''); // 第3步产生的临时策略 (放弃即删除)
+  const [wizardBusy, setWizardBusy] = useState(false);
+  const [wizardPreview, setWizardPreview] = useState<BacktestResult | null>(null);
+
   // AI discovery form
   const [aiIdea, setAiIdea] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -142,32 +150,98 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
   }, [isAiModalOpen]);
 
 
-  const handleCreateCustom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newStratName.trim()) return;
+  // ===== 三步向导逻辑: 意图 → 参数 → 回测验证 =====
+  const buildWizardParams = () => ({
+    min_price: Number(newStratMinP),
+    max_price: Number(newStratMaxP),
+    max_scale: Number(newStratMaxScale),
+    max_premium: Number(newStratMaxPrem),
+    double_low_weight: Number(newStratWeightDL),
+    top_n: Number(newStratTopN),
+    sort_by: newStratSortBy,
+    // YTM 是"越高越稳健", 与双低/价格/溢价率的"越低越优"方向相反
+    sort_ascending: newStratSortBy !== 'ytm',
+  });
+
+  const validateWizardParams = (): string => {
+    if (!newStratName.trim()) return '请填写策略名称';
+    if (Number(newStratMinP) >= Number(newStratMaxP)) return '价格下限必须小于价格上限';
+    if (Number(newStratTopN) < 1 || Number(newStratTopN) > 50) return '持仓数量需在 1~50 之间';
+    if (Number(newStratMaxPrem) < 0) return '转股溢价率上限不能为负';
+    if (Number(newStratMaxScale) <= 0) return '规模上限必须为正';
+    return '';
+  };
+
+  // AI 按意图生成参数建议 (ai-discover 会自动入库, 返回的 strategy.id 作为临时策略, 放弃即删)
+  const handleWizardAiGen = async () => {
+    if (!newStratDesc.trim()) { setWizardError('请先在第 1 步填写策略逻辑描述, AI 依据它生成参数'); return; }
+    setWizardBusy(true); setWizardError('');
     try {
-      await api.createStrategy({
-        name: newStratName,
-        description: newStratDesc || '用户自定义策略',
-        category: '用户自定义',
-        params: {
-          min_price: newStratMinP,
-          max_price: newStratMaxP,
-          max_scale: newStratMaxScale,
-          max_premium: newStratMaxPrem,
-          double_low_weight: newStratWeightDL,
-          top_n: newStratTopN,
-          sort_by: newStratSortBy,
-          sort_ascending: true,
-        },
-      });
-      setIsCreateModalOpen(false);
-      setNewStratName('');
-      setNewStratDesc('');
-      loadStrategies();
+      const res = await api.aiDiscoverStrategy(newStratDesc);
+      const p = res.strategy?.params || {};
+      if (p.min_price != null) setNewStratMinP(p.min_price);
+      if (p.max_price != null) setNewStratMaxP(p.max_price);
+      if (p.max_scale != null) setNewStratMaxScale(p.max_scale);
+      if (p.max_premium != null) setNewStratMaxPrem(p.max_premium);
+      if (p.double_low_weight != null) setNewStratWeightDL(p.double_low_weight);
+      if (p.top_n != null) setNewStratTopN(p.top_n);
+      if (p.sort_by) setNewStratSortBy(p.sort_by);
+      if (res.strategy?.id) setWizardCreatedId(res.strategy.id);
+      if (res.strategy?.name && !newStratName.trim()) setNewStratName(res.strategy.name);
+      setWizardMode('ai');
+      setWizardError('');
     } catch (err) {
-      alert('创建策略失败');
+      setWizardError(err instanceof Error ? err.message : 'AI 生成参数失败');
+    } finally {
+      setWizardBusy(false);
     }
+  };
+
+  // 第 2 步 → 第 3 步: 落库 (AI模式更新微调参数 / 手动模式创建) + 立即回测近两年
+  const runWizardPreview = async () => {
+    const v = validateWizardParams();
+    if (v) { setWizardError(v); return; }
+    setWizardBusy(true); setWizardError('');
+    try {
+      let sid = wizardCreatedId;
+      if (sid && wizardMode === 'ai') {
+        await api.updateStrategy(sid, { name: newStratName.trim(), description: newStratDesc.trim(), params: buildWizardParams() });
+      } else {
+        const res = await api.createStrategy({
+          name: newStratName.trim(),
+          description: newStratDesc.trim() || '用户自定义策略',
+          category: '用户自定义',
+          params: buildWizardParams(),
+        });
+        sid = res.strategy.id;
+        setWizardCreatedId(sid);
+      }
+      const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
+      const bt = await api.runBacktest([sid], fmt(new Date(Date.now() - 730 * 86400000)), fmt(new Date()), 5, 'real');
+      setWizardPreview(bt);
+      setWizardStep(3);
+    } catch (err) {
+      setWizardError(err instanceof Error ? err.message : '回测预览失败');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  // 放弃: 删除临时策略并关闭 (第1/2步时 createdId 为空, 纯关闭)
+  const abandonWizard = async () => {
+    if (wizardCreatedId) {
+      try { await api.deleteStrategy(wizardCreatedId); } catch { /* 删除失败不阻塞关闭 */ }
+    }
+    setIsCreateModalOpen(false);
+  };
+
+  // 确认入库: 刷新列表并选中
+  const confirmWizard = async () => {
+    await loadStrategies();
+    if (wizardCreatedId) {
+      setSelectedStrategyIds((prev) => [...prev.filter((id) => id !== wizardCreatedId), wizardCreatedId]);
+    }
+    setIsCreateModalOpen(false);
   };
 
   const handleAiDiscover = async () => {
@@ -256,7 +330,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
             double_low_weight: Number(editWeightDL),
             top_n: Number(editTopN),
             sort_by: editSortBy,
-            sort_ascending: true,
+            sort_ascending: editSortBy !== 'ytm',
           },
         });
         await loadStrategies();
@@ -286,7 +360,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
             double_low_weight: Number(editWeightDL),
             top_n: Number(editTopN),
             sort_by: editSortBy,
-            sort_ascending: true,
+            sort_ascending: editSortBy !== 'ytm',
           },
         });
         await loadStrategies();
@@ -303,7 +377,7 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
             double_low_weight: Number(editWeightDL),
             top_n: Number(editTopN),
             sort_by: editSortBy,
-            sort_ascending: true,
+            sort_ascending: editSortBy !== 'ytm',
           }
         });
         setIsEditingInModal(false);
@@ -499,7 +573,12 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
                 <span>刷新策略库</span>
               </button>
               <button
-                onClick={() => setIsCreateModalOpen(true)}
+                onClick={() => {
+                  setNewStratName(''); setNewStratDesc('');
+                  setWizardStep(1); setWizardMode('manual'); setWizardError('');
+                  setWizardCreatedId(''); setWizardPreview(null);
+                  setIsCreateModalOpen(true);
+                }}
                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-semibold px-3 py-2 rounded-lg transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -984,141 +1063,215 @@ export const StrategyStudio: React.FC<StrategyStudioProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* Modal: 创建自定义策略 */}
+      {/* Modal: 新建策略三步向导 (意图 → 参数 → 回测验证) */}
       {/* ======================================================== */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-blue-600" />
-                <span>➕ 创建自定义量化策略</span>
+              <div className="flex items-center gap-3">
+                <div className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-blue-600" />
+                  <span>新建策略</span>
+                </div>
+                <div className="flex items-center gap-1 text-[11px] font-semibold">
+                  {[{ n: 1, label: '意图' }, { n: 2, label: '参数' }, { n: 3, label: '回测验证' }].map((s) => (
+                    <span key={s.n} className={`px-2 py-0.5 rounded-full ${
+                      wizardStep === s.n ? 'bg-blue-600 text-white'
+                      : wizardStep > s.n ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-slate-100 text-slate-400'}`}>
+                      {s.n}. {s.label}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <button
-                onClick={() => setIsCreateModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1"
-              >
+              <button onClick={abandonWizard} className="text-slate-400 hover:text-slate-600 p-1">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateCustom} className="p-5 space-y-3.5">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  策略名称 (如: 低溢价白马转债策略):
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="例如: 极低溢价博正股反弹策略"
-                  value={newStratName}
-                  onChange={(e) => setNewStratName(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-hidden focus:border-blue-500"
-                />
-              </div>
+            <div className="p-5 space-y-3.5">
+              {/* ---------- 第 1 步: 意图 ---------- */}
+              {wizardStep === 1 && (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">策略名称:</label>
+                    <input
+                      type="text"
+                      placeholder="例如: 极低溢价博正股反弹策略"
+                      value={newStratName}
+                      onChange={(e) => setNewStratName(e.target.value)}
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-hidden focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      策略逻辑阐述与适用环境 <span className="text-slate-400 font-normal">(第 2 步可交给 AI 按此描述生成参数)</span>:
+                    </label>
+                    <textarea
+                      rows={4}
+                      placeholder="说明该策略的设计哲学、防守垫与进攻收益来源。例如: 只买溢价率低于20%的低价券, 博正股反弹的弹性传导..."
+                      value={newStratDesc}
+                      onChange={(e) => setNewStratDesc(e.target.value)}
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-hidden focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
+                    <button type="button" onClick={abandonWizard}
+                      className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">
+                      取消
+                    </button>
+                    <button type="button"
+                      onClick={() => {
+                        if (!newStratName.trim()) { setWizardError('请先填写策略名称'); return; }
+                        setWizardError('');
+                        setWizardStep(2);
+                      }}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs cursor-pointer">
+                      下一步: 确定参数
+                    </button>
+                  </div>
+                </>
+              )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  策略逻辑阐述与适用环境:
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="说明该策略的设计哲学、防守垫与进攻收益来源..."
-                  value={newStratDesc}
-                  onChange={(e) => setNewStratDesc(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-hidden focus:border-blue-500"
-                />
-              </div>
+              {/* ---------- 第 2 步: 参数 (手动 / AI 生成) ---------- */}
+              {wizardStep === 2 && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-slate-700">
+                      策略参数
+                      {wizardMode === 'ai' && (
+                        <span className="ml-2 px-2 py-0.5 rounded text-[10px] bg-purple-100 text-purple-700">AI 已按意图生成, 可微调</span>
+                      )}
+                    </div>
+                    <button type="button" onClick={handleWizardAiGen} disabled={wizardBusy}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 border border-purple-200 text-purple-700 text-[11px] font-semibold hover:bg-purple-100 disabled:opacity-50 cursor-pointer">
+                      ✨ {wizardBusy ? 'AI 生成中...' : (wizardMode === 'ai' ? '重新让 AI 生成' : '让 AI 按意图生成')}
+                    </button>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">价格下限 (元):</label>
-                  <input
-                    type="number"
-                    value={newStratMinP}
-                    onChange={(e) => setNewStratMinP(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">价格上限 (元):</label>
-                  <input
-                    type="number"
-                    value={newStratMaxP}
-                    onChange={(e) => setNewStratMaxP(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">规模上限 (亿元):</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={newStratMaxScale}
-                    onChange={(e) => setNewStratMaxScale(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">转股溢价率上限 (%):</label>
-                  <input
-                    type="number"
-                    value={newStratMaxPrem}
-                    onChange={(e) => setNewStratMaxPrem(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">双低权重 (W):</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={newStratWeightDL}
-                    onChange={(e) => setNewStratWeightDL(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">持仓数量 (只):</label>
-                  <input
-                    type="number"
-                    value={newStratTopN}
-                    onChange={(e) => setNewStratTopN(Number(e.target.value))}
-                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5"
-                  />
-                </div>
-              </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">价格下限 (元):</label>
+                      <input type="number" value={newStratMinP} onChange={(e) => setNewStratMinP(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">价格上限 (元):</label>
+                      <input type="number" value={newStratMaxP} onChange={(e) => setNewStratMaxP(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">规模上限 (亿元):</label>
+                      <input type="number" step="0.5" value={newStratMaxScale} onChange={(e) => setNewStratMaxScale(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">转股溢价率上限 (%):</label>
+                      <input type="number" value={newStratMaxPrem} onChange={(e) => setNewStratMaxPrem(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">双低权重 (W):</label>
+                      <input type="number" step="0.1" value={newStratWeightDL} onChange={(e) => setNewStratWeightDL(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">持仓数量 (只):</label>
+                      <input type="number" value={newStratTopN} onChange={(e) => setNewStratTopN(Number(e.target.value))}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" />
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">核心排序规则:</label>
-                <select
-                  value={newStratSortBy}
-                  onChange={(e) => setNewStratSortBy(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"
-                >
-                  <option value="double_low">双低值 (价格 + 溢价率*W 越低越优)</option>
-                  <option value="premium_rate">纯转股溢价率 (越低越优)</option>
-                  <option value="price">纯价格 (贴近债底保本)</option>
-                  <option value="ytm">到期收益率 YTM (纯债稳健)</option>
-                </select>
-              </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">核心排序规则:</label>
+                    <select value={newStratSortBy} onChange={(e) => setNewStratSortBy(e.target.value)}
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                      <option value="double_low">双低值 (价格 + 溢价率*W 越低越优)</option>
+                      <option value="premium_rate">纯转股溢价率 (越低越优)</option>
+                      <option value="price">纯价格 (贴近债底保本)</option>
+                      <option value="ytm">到期收益率 YTM (越高越稳健)</option>
+                    </select>
+                  </div>
 
-              <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs"
-                >
-                  确认保存入库
-                </button>
-              </div>
-            </form>
+                  <div className="pt-2 flex justify-between items-center gap-2 border-t border-slate-100">
+                    <button type="button" onClick={() => setWizardStep(1)} disabled={wizardBusy}
+                      className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50">
+                      ← 返回改意图
+                    </button>
+                    <button type="button" onClick={runWizardPreview} disabled={wizardBusy}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs disabled:opacity-50 cursor-pointer">
+                      {wizardBusy ? '回测验证中 (约需数十秒)...' : '下一步: 回测验证 →'}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {/* ---------- 第 3 步: 回测验证 ---------- */}
+              {wizardStep === 3 && (() => {
+                const m = wizardPreview?.metrics_summary?.[wizardCreatedId];
+                const nav = wizardPreview?.nav_series?.[wizardCreatedId] || [];
+                const dates = wizardPreview?.dates || [];
+                return (
+                  <>
+                    {m?.is_simulated && (
+                      <div className="text-[11px] px-3 py-2 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">
+                        ⚠ 该结果来自因子模拟引擎 (非真实撮合), 仅供参考
+                      </div>
+                    )}
+                    {m ? (
+                      <>
+                        <div className="grid grid-cols-4 gap-2">
+                          {[
+                            { label: '累计收益', val: `${m.total_return >= 0 ? '+' : ''}${m.total_return}%`, cls: m.total_return >= 0 ? 'text-emerald-600' : 'text-rose-600' },
+                            { label: '年化 CAGR', val: `${m.cagr >= 0 ? '+' : ''}${m.cagr}%`, cls: m.cagr >= 0 ? 'text-emerald-600' : 'text-rose-600' },
+                            { label: '最大回撤', val: `-${m.max_drawdown}%`, cls: 'text-rose-600' },
+                            { label: '夏普比率', val: `${m.sharpe_ratio}`, cls: 'text-slate-800' },
+                          ].map((c) => (
+                            <div key={c.label} className="bg-slate-50 rounded-lg px-2 py-2 text-center">
+                              <div className={`text-sm font-bold ${c.cls}`}>{c.val}</div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">{c.label}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="border border-slate-100 rounded-lg p-1">
+                          <ReactECharts notMerge style={{ height: 170 }} option={{
+                            grid: { left: 50, right: 12, top: 14, bottom: 24 },
+                            xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: '#94a3b8' } },
+                            yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 9, color: '#94a3b8' } },
+                            tooltip: { trigger: 'axis', textStyle: { fontSize: 10 } },
+                            series: [{
+                              name: '策略净值', type: 'line', data: nav, showSymbol: false,
+                              lineStyle: { width: 1.6, color: '#2563eb' },
+                              areaStyle: { opacity: 0.06, color: '#2563eb' },
+                            }],
+                          }} />
+                        </div>
+                        <div className="text-[10px] text-slate-400">回测区间: 近两年 · 5 个交易日调仓 · 真实撮合模式 (T+1)</div>
+                      </>
+                    ) : (
+                      <div className="text-xs text-slate-500 py-8 text-center">
+                        近两年回测无可用结果 — 该参数区间内候选池可能为空, 建议返回放宽过滤条件
+                      </div>
+                    )}
+                    <div className="pt-2 flex justify-between items-center gap-2 border-t border-slate-100">
+                      <button type="button" onClick={abandonWizard} disabled={wizardBusy}
+                        className="px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg disabled:opacity-50 cursor-pointer">
+                        放弃并删除
+                      </button>
+                      <button type="button" onClick={confirmWizard} disabled={!m || wizardBusy}
+                        className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs disabled:opacity-50 cursor-pointer">
+                        ✓ 验证通过, 确认入库
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {wizardError && (
+                <div className="text-xs px-3 py-2 rounded-lg bg-red-50 text-red-700">{wizardError}</div>
+              )}
+            </div>
           </div>
         </div>
       )}
